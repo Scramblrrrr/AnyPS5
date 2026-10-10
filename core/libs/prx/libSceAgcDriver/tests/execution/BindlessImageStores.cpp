@@ -38,7 +38,7 @@ std::array<std::uint32_t, 4> Buffer(const void* pointer, std::uint32_t stride, s
 }
 
 void Run(AgcDriver::VulkanDevice& device) {
-    GuestAllocations::Mutation().Add(textures.data(), sizeof(textures), true, true);
+    GuestAllocations::Mutation().Add(textures.data(), sizeof(textures), true, true, true);
     const auto table = Buffer(data.heap.data(), 32u, 4u);
     const auto material = Buffer(data.material.data(), 16u, 33u);
     std::copy(table.begin(), table.end(), data.srt.begin());
@@ -75,7 +75,7 @@ void Run(AgcDriver::VulkanDevice& device) {
 }
 
 void RunDivergent(AgcDriver::VulkanDevice& device, std::uint32_t waveSize) {
-    GuestAllocations::Mutation().Add(textures.data(), sizeof(textures), true, true);
+    GuestAllocations::Mutation().Add(textures.data(), sizeof(textures), true, true, true);
     data.material.fill(0u);
     data.material[129] = 1u;
     const auto address = reinterpret_cast<std::uintptr_t>(data.srt.data());
