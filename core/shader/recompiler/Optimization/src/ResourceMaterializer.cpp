@@ -328,8 +328,8 @@ void resolveTableImage(const IrResourcePlan& plan, std::uint32_t imageIndex, con
     if (runtime.readMemory == nullptr) {
         throw std::runtime_error("bindless image table resolution requires runtime memory access");
     }
-    if (image.resourceClass != ImageResourceClass::Sampled) {
-        rejectTable(BindlessRejection::Storage, "bindless storage image tables are unsupported");
+    if (image.atomic) {
+        rejectTable(BindlessRejection::Storage, "bindless atomic image tables are unsupported");
     }
     if (image.packed || image.byElements != 0u) {
         throw std::runtime_error("bindless packed and BY2/BY4 image tables are unsupported");
@@ -392,6 +392,7 @@ void resolveTableImage(const IrResourcePlan& plan, std::uint32_t imageIndex, con
     counters.outOfRange.fetch_add(outOfRange, std::memory_order_relaxed);
     const std::uint64_t heapBase = heap.Base48();
     if (keys.size() > slots) {
+        if (image.resourceClass != ImageResourceClass::Sampled) rejectTable(BindlessRejection::Storage, "wide bindless storage image tables are unsupported");
         if (entries > RuntimeAbi::DenseTableEntryLimit) throw std::runtime_error("bindless dense table exceeds its entry limit");
         std::vector<DenseImageTable::Descriptor> descriptors(entries);
         for (const auto key : keys) {
