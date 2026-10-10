@@ -415,9 +415,21 @@ private:
         }
         entryOffset += immediateOffset;
 
-        const std::array<const IrValue*, 1> imageUsers {&handle};
+        std::vector<const IrValue*> imageUsers {&handle};
+        for (const IrValue* user : heapReads[0]->Uses()) {
+            if (user == &handle || user->Opcode() != IrOpcode::GetImageResource || user->ArgumentCount() != 8) {
+                continue;
+            }
+            bool same = true;
+            for (std::size_t dword = 0; dword < 8 && same; ++dword) {
+                same = user->Argument(dword)->Resolve() == heapReads[dword];
+            }
+            if (same) {
+                imageUsers.push_back(user);
+            }
+        }
         for (const auto* read : heapReads) {
-            if (!usesOnly(*read, imageUsers)) {
+            if (!usesOnly(*read, std::span<const IrValue* const>(imageUsers))) {
                 return false;
             }
         }
