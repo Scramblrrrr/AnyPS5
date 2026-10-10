@@ -1207,6 +1207,31 @@ void ValidateRuntimeResources(const CompiledShader& shader, std::span<const std:
         Require(kind < heaps.size() && heaps[kind] != nullptr, "runtime metadata references an unbound image heap");
         Require(first < heaps[kind]->count && count <= heaps[kind]->count - first, "runtime metadata exceeds its bound heap");
     }
+    const auto flat = std::ranges::find_if(descriptors, [](const auto& binding) { return binding.role == ShaderRecompiler::DescriptorRole::FlattenedSrt; });
+    if (program.runtimeImageTableOffsets.empty()) return;
+    Require(flat != descriptors.end(), "image table has no flattened SRT binding");
+    const auto& data = flat->guestDescriptor;
+    std::set<std::uint32_t> checked;
+    for (const auto header : program.runtimeImageTableOffsets) {
+        Require(header < data.size() && 1u + 2u * ShaderRecompiler::RuntimeAbi::BindlessTableSlots <= data.size() - header, "image table header exceeds flattened SRT");
+        if ((data[header] & ShaderRecompiler::RuntimeAbi::DenseTableFlag) == 0u) continue;
+        const auto keys = data[header + 1u];
+        const auto count = data[header] & ~ShaderRecompiler::RuntimeAbi::DenseTableFlag;
+        Require(count <= ShaderRecompiler::RuntimeAbi::DenseTableEntryLimit && keys <= data.size() && count <= data.size() - keys, "dense image key map exceeds flattened SRT");
+        const auto fallback = data[header + 2u];
+        Require(fallback <= data.size() && metadataWords <= data.size() - fallback, "dense image fallback exceeds flattened SRT");
+        for (std::uint32_t key = 0; key < count; ++key) {
+            const auto offset = data[keys + key];
+            if (offset == 0xffffffffu || !checked.insert(offset).second) continue;
+            Require(offset <= data.size() && metadataWords <= data.size() - offset, "dense image metadata exceeds flattened SRT");
+            if ((data[offset + 3u] & ShaderRecompiler::RuntimeAbi::InvalidImageFlag) != 0u) continue;
+            const auto kind = data[offset];
+            const auto first = data[offset + 1u];
+            const auto elements = data[offset + 2u];
+            Require(kind < heaps.size() && heaps[kind] != nullptr && elements != 0u, "dense image metadata references an unbound heap");
+            Require(first < heaps[kind]->count && elements <= heaps[kind]->count - first, "dense image metadata exceeds its bound heap");
+        }
+    }
 }
 
 }

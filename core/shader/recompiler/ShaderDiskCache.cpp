@@ -291,6 +291,7 @@ void encodeArtifact(Writer& writer, const CompiledShaderArtifact& result) {
     writer.Value(result.imageMetadataDword);
     writer.Value(result.runtimeImageCount);
     writer.Values(std::span<const std::uint32_t>(result.runtimeImageResources));
+    writer.Values(std::span<const std::uint32_t>(result.runtimeImageTableOffsets));
     writer.List(result.vertexInputPatches, [](Writer& out, const VertexInputPatch& patch) {
         out.Value(patch.location);
         out.Value(patch.word);
@@ -333,6 +334,7 @@ void decodeArtifact(Reader& reader, CompiledShaderArtifact& result) {
     reader.Value(result.imageMetadataDword);
     reader.Value(result.runtimeImageCount);
     reader.Values(result.runtimeImageResources);
+    reader.Values(result.runtimeImageTableOffsets);
     reader.List(result.vertexInputPatches, 20, [](Reader& in, VertexInputPatch& patch) {
         in.Value(patch.location);
         in.Value(patch.word);

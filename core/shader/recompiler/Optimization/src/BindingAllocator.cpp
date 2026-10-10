@@ -1,5 +1,6 @@
 #include "Optimization/BindingAllocator.hpp"
 #include "Optimization/ResourceMaterializer.hpp"
+#include "PipelineSpecialization.hpp"
 #include <algorithm>
 #include <array>
 #include <stdexcept>
@@ -91,6 +92,7 @@ BindingAllocationResult BindingAllocator::Allocate(IrProgram& program, const Bin
     }
 
     const ShaderInfo& info = program.Resources().info;
+    if (info.images.size() > ShaderInfo::MaxImages) fail("shader static image count exceeds capacity");
 
     IrBindingLayout next;
     next.userDataRegisters = collectUserData(program);
@@ -143,7 +145,7 @@ BindingAllocationResult BindingAllocator::Allocate(IrProgram& program, const Bin
     }
     for (std::uint32_t i = 0; i < imageGroups.size(); i++) {
         if (!imageGroups[i].empty()) {
-            if (imageGroups[i].size() > RuntimeAbi::HeapCapacity(static_cast<DescriptorBindingKind>(FirstImageBinding + i))) fail("shader image heap capacity exceeded");
+            if (imageGroups[i].size() > std::min(RuntimeAbi::HeapCapacity(static_cast<DescriptorBindingKind>(FirstImageBinding + i)), PipelineSpecialization::DescriptorIndexStride)) fail("shader image heap capacity exceeded");
             addBinding(next, static_cast<DescriptorBindingKind>(FirstImageBinding + i), std::move(imageGroups[i]));
         }
     }

@@ -55,6 +55,25 @@ std::uint32_t DescriptorElementPointer(SpirvEmitterState& state, std::uint32_t r
     return pointer;
 }
 
+std::uint32_t LoadRuntimeImageMetadataWord(SpirvEmitterState& state, std::uint32_t resource, std::uint32_t member) {
+    const auto index = state.runtimeImageMetadata != 0u ? state.runtimeImageMetadata : ConstantU32(state, resource);
+    const auto dense = Binary(state, spv::OpINotEqual, TypeBool(state), Binary(state, spv::OpBitwiseAnd, TypeU32(state), index, ConstantU32(state, RuntimeAbi::DenseTableFlag)), ConstantU32(state, 0u));
+    const auto legacyIndex = Select(state, TypeU32(state), dense, ConstantU32(state, 0u), index);
+    const auto legacyOffset = Binary(state, spv::OpIAdd, TypeU32(state), ConstantU32(state, state.program.Metadata().bindings.ImageMetadataDword() + member), Binary(state, spv::OpIMul, TypeU32(state), legacyIndex, ConstantU32(state, sizeof(RuntimeAbi::ResourceMetadata) / sizeof(std::uint32_t))));
+    const auto load = [&](std::uint32_t variable, std::uint32_t offset) {
+        const auto pointer = state.module.AllocateId();
+        state.module.AddFunction(spv::OpAccessChain, TypeStorageBufferElementPointer(state), pointer, variable, ConstantU32(state, 0u), offset);
+        const auto value = state.module.AllocateId();
+        state.module.AddFunction(spv::OpLoad, TypeU32(state), value, pointer);
+        return value;
+    };
+    const auto legacy = load(state.shaderDataStorageVariable, legacyOffset);
+    if (state.flattenedSrtVariable == 0u) return legacy;
+    const auto payload = Binary(state, spv::OpIAdd, TypeU32(state), Binary(state, spv::OpBitwiseAnd, TypeU32(state), index, ConstantU32(state, ~RuntimeAbi::DenseTableFlag)), ConstantU32(state, member));
+    const auto denseOffset = Select(state, TypeU32(state), dense, payload, ConstantU32(state, 0u));
+    return Select(state, TypeU32(state), dense, load(state.flattenedSrtVariable, denseOffset), legacy);
+}
+
 std::uint32_t TableImageIndex(SpirvEmitterState& state, DescriptorBindingKind kind, std::uint32_t resource) {
     const bool storage = ImageBindingResourceClass(kind) == ImageResourceClass::Storage;
     const auto supported = [&](std::uint32_t capability) {
@@ -66,11 +85,7 @@ std::uint32_t TableImageIndex(SpirvEmitterState& state, DescriptorBindingKind ki
     }
     state.module.EmitCapability(dynamic);
     if (state.runtimeImageMetadata == 0u) FailEmit("bindless image has no runtime metadata index");
-    const auto offset = Binary(state, spv::OpIAdd, TypeU32(state), ConstantU32(state, state.program.Metadata().bindings.ImageMetadataDword() + offsetof(RuntimeAbi::ResourceMetadata, firstElement) / sizeof(std::uint32_t)), Binary(state, spv::OpIMul, TypeU32(state), state.runtimeImageMetadata, ConstantU32(state, sizeof(RuntimeAbi::ResourceMetadata) / sizeof(std::uint32_t))));
-    const auto metadata = state.module.AllocateId();
-    state.module.AddFunction(spv::OpAccessChain, TypeStorageBufferElementPointer(state), metadata, state.shaderDataStorageVariable, ConstantU32(state, 0u), offset);
-    const auto index = state.module.AllocateId();
-    state.module.AddFunction(spv::OpLoad, TypeU32(state), index, metadata);
+    const auto index = LoadRuntimeImageMetadataWord(state, resource, offsetof(RuntimeAbi::ResourceMetadata, firstElement) / sizeof(std::uint32_t));
     if (!state.tableIndexNonUniform) {
         return index;
     }

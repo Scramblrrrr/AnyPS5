@@ -1,4 +1,5 @@
 #include "Optimization/ResourceMaterializer.hpp"
+#include "Optimization/DenseImageTable.hpp"
 #include "Optimization/SrtWalker/SrtFlatSlotClasses.hpp"
 #include "Optimization/ShaderStageInputInfo.hpp"
 #include "RdnaDecoder/RdnaDescriptorFormat.hpp"
@@ -293,6 +294,12 @@ void reportBindless() {
 struct TableResolution {
     std::vector<DescriptorValue> slots;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> mapping;
+    DenseImageTable dense;
+    std::vector<std::uint32_t> denseModes;
+    std::vector<bool> denseInvalid;
+    std::uint64_t heapBase = 0;
+    std::uint32_t entryOffset = 0;
+    bool wide = false;
 };
 
 struct TableTrace {
@@ -372,20 +379,49 @@ void resolveTableImage(const IrResourcePlan& plan, std::uint32_t imageIndex, con
             }
             std::sort(keys.begin(), keys.end());
             keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
-            if (keys.size() > slots) {
-                rejectTable(BindlessRejection::Capacity, "bindless image table: " + std::to_string(keys.size()) + " distinct keys exceed the " + std::to_string(slots) + " slots");
-            }
+
         }
     }
     if (!materialMode) {
-        if (entries > slots) {
-            rejectTable(table.hasMaterial ? BindlessRejection::MaterialScan : BindlessRejection::Capacity, "bindless image table has " + std::to_string(entries) + " entries (" + std::to_string(materialEntries) + " materials), limit " + std::to_string(slots));
+        if (entries > RuntimeAbi::DenseTableEntryLimit) {
+            rejectTable(BindlessRejection::Capacity, "bindless image table exceeds the dense entry limit");
         }
         keys.resize(entries);
         for (std::uint32_t key = 0; key < entries; key++) keys[key] = key;
     }
     counters.outOfRange.fetch_add(outOfRange, std::memory_order_relaxed);
     const std::uint64_t heapBase = heap.Base48();
+    if (keys.size() > slots) {
+        if (entries > RuntimeAbi::DenseTableEntryLimit) throw std::runtime_error("bindless dense table exceeds its entry limit");
+        std::vector<DenseImageTable::Descriptor> descriptors(entries);
+        for (const auto key : keys) {
+            const auto address = heapBase + table.entryOffset + static_cast<std::uint64_t>(key) * TableEntryBytes;
+            for (std::uint32_t word = 0; word < 8u; ++word) readWord(address + word * sizeof(std::uint32_t), descriptors[key][word]);
+        }
+        resolution.wide = true;
+        resolution.heapBase = heapBase;
+        resolution.entryOffset = table.entryOffset;
+        resolution.dense = BuildDenseImageTable(descriptors, RuntimeAbi::DenseTableEntryLimit);
+        for (const auto& words : resolution.dense.descriptors) {
+            DescriptorValue descriptor{words, 8u};
+            bool invalid = !validImageDescriptor(descriptor, image.r128);
+            std::uint32_t mode = 0u;
+            if (!invalid) {
+                try {
+                    mode = ResourceMaterializer::RuntimeImageMode(image, descriptor, plan.info.runtimeImageModes.at(imageIndex));
+                } catch (const std::runtime_error&) {
+                    invalid = true;
+                }
+            }
+            resolution.denseModes.push_back(mode);
+            resolution.denseInvalid.push_back(invalid);
+        }
+        DescriptorValue nullDescriptor;
+        nullDescriptor.dwordCount = 8u;
+        resolution.slots.assign(slots, nullDescriptor);
+        resolved = nullDescriptor;
+        return;
+    }
     std::vector<DescriptorValue> candidates(keys.size());
     std::vector<std::uint8_t> valid(keys.size(), 0u);
     std::uint32_t paddedNull = 0u;
@@ -585,7 +621,7 @@ void materializeTables(const IrResourcePlan& plan, ResourceSnapshot& snapshot, c
         const auto slots = ResourceMaterializer::BindlessSlots();
         if (table.slots.size() != slots) throw std::runtime_error("runtime table size differs from the static interface");
         const auto mappingOffset = snapshot.flattenedSrt.size();
-        snapshot.flattenedSrt.push_back(static_cast<std::uint32_t>(table.mapping.size()));
+        snapshot.flattenedSrt.push_back(table.wide ? RuntimeAbi::DenseTableFlag | static_cast<std::uint32_t>(table.dense.keys.size()) : static_cast<std::uint32_t>(table.mapping.size()));
         for (const auto& [key, slot] : table.mapping) {
             if (slot >= slots) throw std::runtime_error("runtime table slot exceeds its static capacity");
             snapshot.flattenedSrt.push_back(key);
@@ -593,6 +629,42 @@ void materializeTables(const IrResourcePlan& plan, ResourceSnapshot& snapshot, c
         }
         snapshot.flattenedSrt.resize(mappingOffset + 1u + 2u * slots, 0u);
         snapshot.images.insert(snapshot.images.end(), table.slots.begin() + 1u, table.slots.end());
+    }
+}
+
+void materializeDenseTables(const IrResourcePlan& plan, ResourceSnapshot& snapshot, const std::vector<TableResolution>& tables) {
+    std::size_t header = plan.srtReads.size();
+    constexpr auto metadataWords = sizeof(RuntimeAbi::ResourceMetadata) / sizeof(std::uint32_t);
+    for (std::uint32_t root = 0; root < plan.info.images.size(); ++root) {
+        if (!plan.descriptorSources.at(plan.info.images[root].source).indirectImage.has_value()) continue;
+        const auto& table = tables[root];
+        if (table.wide) {
+            const auto fallback = static_cast<std::uint32_t>(snapshot.flattenedSrt.size());
+            snapshot.flattenedSrt.resize(snapshot.flattenedSrt.size() + metadataWords, 0u);
+            const auto pool = static_cast<std::uint32_t>(snapshot.flattenedSrt.size());
+            for (std::uint32_t slot = 0; slot < table.dense.descriptors.size(); ++slot) {
+                DenseRuntimeImage image;
+                image.root = root;
+                image.resource = static_cast<std::uint32_t>(snapshot.images.size());
+                image.metadataOffset = static_cast<std::uint32_t>(snapshot.flattenedSrt.size());
+                image.mode = table.denseModes[slot];
+                image.invalid = table.denseInvalid[slot];
+                image.descriptor = {table.dense.descriptors[slot], 8u};
+                snapshot.images.push_back(image.invalid ? DescriptorValue{{}, 8u} : image.descriptor);
+                snapshot.flattenedSrt.resize(snapshot.flattenedSrt.size() + metadataWords, 0u);
+                snapshot.flattenedSrt[image.metadataOffset + 3u] = image.invalid ? RuntimeAbi::InvalidImageFlag : image.mode << 1u;
+                std::copy(image.descriptor.dwords.begin(), image.descriptor.dwords.end(), snapshot.flattenedSrt.begin() + image.metadataOffset + 4u);
+                snapshot.denseImages.push_back(image);
+            }
+            const auto keys = static_cast<std::uint32_t>(snapshot.flattenedSrt.size());
+            for (const auto slot : table.dense.keys) snapshot.flattenedSrt.push_back(slot == DenseImageTable::Unmapped ? DenseImageTable::Unmapped : pool + slot * metadataWords);
+            snapshot.flattenedSrt[header + 1u] = keys;
+            snapshot.flattenedSrt[header + 2u] = fallback;
+            snapshot.flattenedSrt[header + 3u] = static_cast<std::uint32_t>(table.heapBase);
+            snapshot.flattenedSrt[header + 4u] = static_cast<std::uint32_t>(table.heapBase >> 32u);
+            snapshot.flattenedSrt[header + 5u] = table.entryOffset;
+        }
+        header += 1u + 2u * ResourceMaterializer::BindlessSlots();
     }
 }
 
@@ -815,6 +887,7 @@ void ResourceMaterializer::ApplyStaticInterface(IrProgram& program, bool nativeS
         image.mipCount = image.mipMode == ImageMipMode::DynamicStorage ? RuntimeAbi::StorageMipSlots : 1u;
         if (resources.descriptorSources.at(image.source).indirectImage.has_value()) {
             if (images.size() + slots - 1u > ShaderInfo::MaxImages) throw std::runtime_error("static bindless image capacity exceeded");
+            resources.info.usesFaultBuffer = true;
             image.indirectRoot = index;
             image.indirectResources.push_back(index);
             for (std::uint32_t slot = 1u; slot < slots; ++slot) {
@@ -975,6 +1048,7 @@ void ResourceMaterializer::Materialize(const IrResourcePlan& program, const SrtR
     const auto started = MaterializeProfiled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     materializeTables(plan, nextSnapshot, tables);
     materializeSrtGuards(plan, nextSnapshot);
+    materializeDenseTables(plan, nextSnapshot, tables);
     if (MaterializeProfiled()) specializationNanoseconds.fetch_add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count()), std::memory_order_relaxed);
     snapshot = std::move(nextSnapshot);
     reportBindless();

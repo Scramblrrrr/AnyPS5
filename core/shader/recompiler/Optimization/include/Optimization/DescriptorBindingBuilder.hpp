@@ -27,6 +27,7 @@ struct PreparedImageMetadata {
 struct DescriptorBindingPlan {
     std::vector<PreparedDescriptorBinding> bindings;
     std::vector<PreparedImageMetadata> imageMetadata;
+    std::vector<PreparedImageMetadata> denseImageMetadata;
     std::vector<PipelineSpecializationConstant> specialization;
     bool storageData = false;
 };

@@ -1,4 +1,5 @@
 #include "SpirvBackend/SpirvImageEmitter.hpp"
+#include "SpirvBackend/SpirvMemory/SpirvDescriptors.hpp"
 #include "Optimization/ResourceMaterializer.hpp"
 #include "PipelineSpecialization.hpp"
 #include "SpirvBackend/SpirvBda.hpp"
@@ -27,6 +28,8 @@ namespace {
 struct TableSelection {
     std::uint32_t slot = 0;
     std::uint32_t mapped = 0;
+    std::uint32_t addressLow = 0;
+    std::uint32_t addressHigh = 0;
 };
 
 struct ImageEmitAccess {
@@ -47,13 +50,7 @@ struct SampleSetup {
 };
 
 std::uint32_t RuntimeImageDword(SpirvEmitterState& state, std::uint32_t resource, std::uint32_t member) {
-    const auto index = state.runtimeImageMetadata != 0u ? state.runtimeImageMetadata : ConstantU32(state, resource);
-    const auto dword = Binary(state, spv::OpIAdd, TypeU32(state), ConstantU32(state, state.program.Metadata().bindings.ImageMetadataDword() + member), Binary(state, spv::OpIMul, TypeU32(state), index, ConstantU32(state, sizeof(RuntimeAbi::ResourceMetadata) / sizeof(std::uint32_t))));
-    const auto pointer = state.module.AllocateId();
-    state.module.AddFunction(spv::OpAccessChain, TypeStorageBufferElementPointer(state), pointer, state.shaderDataStorageVariable, ConstantU32(state, 0u), dword);
-    const auto value = state.module.AllocateId();
-    state.module.AddFunction(spv::OpLoad, TypeU32(state), value, pointer);
-    return value;
+    return LoadRuntimeImageMetadataWord(state, resource, member);
 }
 
 std::uint32_t RuntimeImageSwizzle(SpirvEmitterState& state, std::uint32_t resource, std::uint32_t component) {
@@ -1232,7 +1229,9 @@ TableSelection EmitIndirectImageSelector(SpirvValueEmitContext& ctx, const Image
     };
     const auto mapping = ConstantU32(state, image.indirectMappingOffset);
     auto low = ConstantU32(state, 0u);
-    auto high = loadMapping(mapping);
+    const auto header = loadMapping(mapping);
+    const auto dense = Binary(state, spv::OpINotEqual, TypeBool(state), Binary(state, spv::OpBitwiseAnd, TypeU32(state), header, ConstantU32(state, RuntimeAbi::DenseTableFlag)), ConstantU32(state, 0u));
+    auto high = Select(state, TypeU32(state), dense, ConstantU32(state, 0u), header);
     auto selected = ConstantU32(state, image.indirectRoot);
     auto mapped = ConstantBool(state, false);
     for (std::uint32_t iteration = 0; iteration < image.indirectSearchIterations; iteration++) {
@@ -1252,7 +1251,24 @@ TableSelection EmitIndirectImageSelector(SpirvValueEmitContext& ctx, const Image
         low = Select(state, TypeU32(state), takeUpper, Binary(state, spv::OpIAdd, TypeU32(state), mid, ConstantU32(state, 1u)), low);
         high = Select(state, TypeU32(state), takeLower, mid, high);
     }
-    return {selected, mapped};
+    const auto count = Binary(state, spv::OpBitwiseAnd, TypeU32(state), header, ConstantU32(state, ~RuntimeAbi::DenseTableFlag));
+    const auto inRange = Binary(state, spv::OpLogicalAnd, TypeBool(state), dense, Binary(state, spv::OpULessThan, TypeBool(state), key, count));
+    const auto keyBase = loadMapping(Binary(state, spv::OpIAdd, TypeU32(state), mapping, ConstantU32(state, 1u)));
+    const auto safeKey = Select(state, TypeU32(state), inRange, Binary(state, spv::OpIAdd, TypeU32(state), keyBase, key), ConstantU32(state, 0u));
+    const auto offset = loadMapping(safeKey);
+    const auto denseMapped = Binary(state, spv::OpLogicalAnd, TypeBool(state), inRange, Binary(state, spv::OpINotEqual, TypeBool(state), offset, ConstantU32(state, 0xffffffffu)));
+    const auto fallback = loadMapping(Binary(state, spv::OpIAdd, TypeU32(state), mapping, ConstantU32(state, 2u)));
+    const auto denseSlot = Binary(state, spv::OpBitwiseOr, TypeU32(state), ConstantU32(state, RuntimeAbi::DenseTableFlag), Select(state, TypeU32(state), denseMapped, offset, fallback));
+    const auto heapLow = loadMapping(Binary(state, spv::OpIAdd, TypeU32(state), mapping, ConstantU32(state, 3u)));
+    const auto heapHigh = loadMapping(Binary(state, spv::OpIAdd, TypeU32(state), mapping, ConstantU32(state, 4u)));
+    const auto entryOffset = loadMapping(Binary(state, spv::OpIAdd, TypeU32(state), mapping, ConstantU32(state, 5u)));
+    const auto keyBytes = Binary(state, spv::OpShiftLeftLogical, TypeU32(state), key, ConstantU32(state, 5u));
+    const auto byteOffset = Binary(state, spv::OpIAdd, TypeU32(state), entryOffset, keyBytes);
+    const auto addressLow = Binary(state, spv::OpIAdd, TypeU32(state), heapLow, byteOffset);
+    const auto offsetCarry = Select(state, TypeU32(state), Binary(state, spv::OpULessThan, TypeBool(state), byteOffset, entryOffset), ConstantU32(state, 1u), ConstantU32(state, 0u));
+    const auto addressCarry = Select(state, TypeU32(state), Binary(state, spv::OpULessThan, TypeBool(state), addressLow, heapLow), ConstantU32(state, 1u), ConstantU32(state, 0u));
+    const auto addressHigh = Binary(state, spv::OpIAdd, TypeU32(state), heapHigh, Binary(state, spv::OpIAdd, TypeU32(state), offsetCarry, addressCarry));
+    return {Select(state, TypeU32(state), dense, denseSlot, selected), Select(state, TypeBool(state), dense, denseMapped, mapped), addressLow, addressHigh};
 }
 
 void EmitEmulatedCompareSample(SpirvValueEmitContext& ctx, const ImageEmitAccess& access, const SampleSetup& setup) {
@@ -1570,6 +1586,15 @@ void EmitImage(SpirvValueEmitContext& ctx, const IrValue& inst) {
     const auto table = TableSlot(ctx, inst, memory, base);
     if (table.slot != 0u) {
         state.runtimeImageMetadata = table.slot;
+        const auto flags = RuntimeImageDword(state, memory.resource, offsetof(RuntimeAbi::ResourceMetadata, flags) / sizeof(std::uint32_t));
+        const auto invalid = Binary(state, spv::OpINotEqual, TypeBool(state), Binary(state, spv::OpBitwiseAnd, TypeU32(state), flags, ConstantU32(state, RuntimeAbi::InvalidImageFlag)), ConstantU32(state, 0u));
+        const auto access = ImageOpcodeInfoOf(inst.Opcode()).access;
+        const auto active = inst.Opcode() == IrOpcode::ImageRead || inst.Opcode() == IrOpcode::ImageWrite || access == ImageAccess::Atomic ? ctx.Arg(inst, inst.ArgumentCount() - 1u) : ConstantBool(state, true);
+        const auto fault = Binary(state, spv::OpLogicalAnd, TypeBool(state), active, invalid);
+        EmitIfCondition(state, fault, [&] {
+            RecordBdaFaultWords(state, table.addressLow, table.addressHigh, ConstantU32(state, 32u), BdaInstructionPc(state, inst), BdaAbi::FaultReason::InvalidDescriptor);
+        });
+        StopBdaInvocationIf(state, fault);
     }
     const auto emitMode = [&](const ImageResource& mode) {
         state.runtimeImage = &mode;
@@ -1596,7 +1621,7 @@ void EmitImage(SpirvValueEmitContext& ctx, const IrValue& inst) {
         state.runtimeImageMetadata = 0u;
         return;
     }
-    const auto selector = base.indirectRoot == ImageResource::NoIndirectImage ? state.module.SpecializationConstant(TypeU32(state), PipelineSpecialization::ImageBase + memory.resource * PipelineSpecialization::ImageWords, 0u) : Binary(state, spv::OpShiftRightLogical, TypeU32(state), RuntimeImageDword(state, memory.resource, offsetof(RuntimeAbi::ResourceMetadata, flags) / sizeof(std::uint32_t)), ConstantU32(state, 1u));
+    const auto selector = base.indirectRoot == ImageResource::NoIndirectImage ? state.module.SpecializationConstant(TypeU32(state), PipelineSpecialization::ImageBase + memory.resource * PipelineSpecialization::ImageWords, 0u) : Binary(state, spv::OpShiftRightLogical, TypeU32(state), Binary(state, spv::OpBitwiseAnd, TypeU32(state), RuntimeImageDword(state, memory.resource, offsetof(RuntimeAbi::ResourceMetadata, flags) / sizeof(std::uint32_t)), ConstantU32(state, ~RuntimeAbi::InvalidImageFlag)), ConstantU32(state, 1u));
     const bool returnsValue = inst.Opcode() != IrOpcode::ImageWrite;
     const auto resultId = returnsValue ? ctx.Result(inst) : 0u;
     ctx.definitions.erase(&inst);

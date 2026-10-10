@@ -328,6 +328,17 @@ DescriptorBindingPlan DescriptorBindingBuilder::Prepare(const IrBindingLayout& l
         }
         for (std::uint32_t mode = 0; mode < modes.size(); ++mode) plan.specialization.push_back({PipelineSpecialization::ImageModeBase + resource * PipelineSpecialization::ImageModeStride + mode, active[mode] ? 1u : 0u});
     }
+    for (const auto& entry : snapshot.denseImages) {
+        if (entry.invalid) continue;
+        const auto& mode = info.runtimeImageModes.at(entry.root).at(entry.mode);
+        for (const auto& pair : info.sampledPairs) if (pair.image == entry.root) samplerModes.at(pair.sampler) |= samplerMode(mode);
+    }
+    for (auto& constant : plan.specialization) {
+        for (const auto& entry : snapshot.denseImages) {
+            if (entry.invalid) continue;
+            if (constant.id == PipelineSpecialization::ImageModeBase + entry.root * PipelineSpecialization::ImageModeStride + entry.mode) constant.value = 1u;
+        }
+    }
     plan.bindings.reserve(layout.descriptors.size());
     for (const auto& logical : layout.descriptors) {
         const bool imageHeap = ImageBindingResourceClass(logical.kind) != ImageResourceClass::None;
@@ -357,6 +368,13 @@ DescriptorBindingPlan DescriptorBindingBuilder::Prepare(const IrBindingLayout& l
                 originals.push_back(element);
             }
         }
+        if (imageHeap) {
+            for (const auto& entry : snapshot.denseImages) {
+                if (entry.invalid) continue;
+                const auto& mode = info.runtimeImageModes.at(entry.root).at(entry.mode);
+                if (DescriptorBindingForImage(mode) == logical.kind && !mode.constantSwizzle) compact.resources.push_back(entry.resource);
+            }
+        }
         if (imageHeap || samplerHeap) plan.specialization.push_back({PipelineSpecialization::HeapCountBase + static_cast<std::uint32_t>(logical.kind), std::max(1u, static_cast<std::uint32_t>(compact.resources.size()))});
         if ((imageHeap || samplerHeap) && compact.resources.empty()) continue;
         PreparedDescriptorBinding entry{};
@@ -375,33 +393,37 @@ DescriptorBindingPlan DescriptorBindingBuilder::Prepare(const IrBindingLayout& l
                 else ++entry.readOnlyBuffers;
             }
         } else if (physical.role == DescriptorRole::GuestImages) {
-            const auto& modes = info.runtimeImageModes.at(compact.resources.front());
+            const auto& modes = info.runtimeImageModes.at(logical.resources.front());
             const auto shape = std::ranges::find_if(modes, [&](const ImageResource& mode) { return DescriptorBindingForImage(mode) == compact.kind; });
             if (shape == modes.end()) fail("runtime image heap has no static image type");
             physical.imageShape = ImageShapeForResource(*shape);
             for (std::size_t element = 0; element < compact.resources.size(); ++element) {
                 const auto resource = compact.resources[element];
-                const auto& image = info.images.at(resource);
-                const auto& mode = info.runtimeImageModes.at(resource).at(imageModes[resource]);
+                const auto dense = std::ranges::find_if(snapshot.denseImages, [&](const DenseRuntimeImage& value) { return value.resource == resource; });
+                const auto owner = dense == snapshot.denseImages.end() ? resource : dense->root;
+                const auto selectedMode = dense == snapshot.denseImages.end() ? imageModes[resource] : dense->mode;
+                const auto& image = info.images.at(owner);
+                const auto& mode = info.runtimeImageModes.at(owner).at(selectedMode);
                 entry.identityImageSwizzle.push_back(mode.conversionFormat != IrBufferFormat::Invalid || mode.depthBits);
                 physical.imageWritten.push_back(image.written || image.atomic);
                 physical.imageDepthCompare.push_back(mode.depthCompare);
                 physical.imageAtomic.push_back(image.atomic);
-                physical.imageUnnormalized.push_back(unnormalized.images.at(resource));
+                physical.imageUnnormalized.push_back(unnormalized.images.at(owner));
                 physical.imageSamplers.push_back(0u);
                 physical.imageAtomic64.push_back(image.atomic64);
                 if (layout.runtimeImageCount == 0u || image.indirectRoot == ImageResource::NoIndirectImage) continue;
-                if (resource >= layout.runtimeImageCount) fail("runtime image metadata exceeds compact layout");
+                if (dense == snapshot.denseImages.end() && resource >= layout.runtimeImageCount) fail("runtime image metadata exceeds compact layout");
                 const auto& descriptor = snapshot.images.at(resource);
                 RuntimeAbi::ResourceMetadata metadata{};
                 if (descriptor.dwordCount != metadata.descriptor.size()) fail("invalid runtime image descriptor width");
                 metadata.binding = static_cast<std::uint32_t>(compact.kind);
                 metadata.firstElement = static_cast<std::uint32_t>(element);
                 metadata.elementCount = 1u;
-                metadata.flags = imageModes[resource] << 1u;
+                metadata.flags = selectedMode << 1u;
                 if (descriptor.dwords[0] == 0u && (descriptor.dwords[1] & 0xffu) == 0u) metadata.flags |= 1u;
                 const auto offset = layout.ImageMetadataDword() + resource * static_cast<std::uint32_t>(sizeof(metadata) / sizeof(std::uint32_t));
-                plan.imageMetadata.push_back({resource, offset, metadata});
+                if (dense == snapshot.denseImages.end()) plan.imageMetadata.push_back({resource, offset, metadata});
+                else plan.denseImageMetadata.push_back({resource, dense->metadataOffset, metadata});
             }
         } else if (physical.role == DescriptorRole::GuestSamplers) {
             for (std::uint32_t element = 0; element < compact.resources.size(); ++element) {
@@ -430,7 +452,9 @@ DescriptorBindingPlan DescriptorBindingBuilder::Prepare(const IrBindingLayout& l
         for (std::size_t element = 0; element < binding.resources.size(); ++element) {
             const auto resource = binding.resources[element];
             for (const auto& pair : info.sampledPairs) {
-                if (pair.image == resource || pair.image == info.images.at(resource).indirectRoot) binding.descriptor.imageSamplers[element] |= samplerMasks.at(pair.sampler);
+                const auto dense = std::ranges::find_if(snapshot.denseImages, [&](const DenseRuntimeImage& value) { return value.resource == resource; });
+                const auto owner = dense == snapshot.denseImages.end() ? info.images.at(resource).indirectRoot : dense->root;
+                if (pair.image == resource || pair.image == owner) binding.descriptor.imageSamplers[element] |= samplerMasks.at(pair.sampler);
             }
         }
     }
@@ -454,6 +478,7 @@ DescriptorBindingPlan DescriptorBindingBuilder::Select(const DescriptorBindingPl
         }
     }
     selected.imageMetadata = plan.imageMetadata;
+    selected.denseImageMetadata = plan.denseImageMetadata;
     return selected;
 }
 
@@ -495,6 +520,12 @@ void DescriptorBindingBuilder::Populate(BindingAllocationResult& allocation, con
                 fail("DescriptorBindingBuilder::Populate flattened SRT snapshot is empty");
             }
             physical.guestDescriptor = snapshot.flattenedSrt;
+            for (const auto& entry : plan.denseImageMetadata) {
+                auto metadata = entry.metadata;
+                metadata.descriptor = snapshot.images.at(entry.resource).dwords;
+                if (entry.offset + sizeof(metadata) / sizeof(std::uint32_t) > physical.guestDescriptor.size()) fail("dense image metadata exceeds flattened SRT");
+                std::memcpy(physical.guestDescriptor.data() + entry.offset, &metadata, sizeof(metadata));
+            }
             break;
         case DescriptorRole::ShaderData:
             physical.guestDescriptor = std::move(shaderData);

@@ -34,6 +34,15 @@ struct UniformFill {
     bool operator==(const UniformFill& other) const = default;
 };
 
+struct DenseRuntimeImage {
+    std::uint32_t root = 0;
+    std::uint32_t resource = 0;
+    std::uint32_t metadataOffset = 0;
+    std::uint32_t mode = 0;
+    bool invalid = false;
+    DescriptorValue descriptor;
+};
+
 struct ResourceSnapshot {
     std::vector<DescriptorValue> buffers;
     std::vector<DescriptorValue> images;
@@ -42,6 +51,7 @@ struct ResourceSnapshot {
     std::vector<std::uint32_t> userData;
     UniformFill uniformFill;
     std::vector<SrtReadPoison> srtPoison;
+    std::vector<DenseRuntimeImage> denseImages;
 };
 
 struct UniformFillPlan {

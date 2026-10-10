@@ -405,7 +405,9 @@ CompiledVariant compileVariant(const RecompileRequest& request, IrProgram progra
     result.imageMetadataDword = bindings.layout.ImageMetadataDword();
     result.runtimeImageCount = bindings.layout.runtimeImageCount;
     for (std::uint32_t index = 0; index < program.Info().images.size(); ++index) {
-        if (program.Info().images[index].indirectRoot != ImageResource::NoIndirectImage) result.runtimeImageResources.push_back(index);
+        const auto& image = program.Info().images[index];
+        if (image.indirectRoot != ImageResource::NoIndirectImage) result.runtimeImageResources.push_back(index);
+        if (image.indirectRoot == index) result.runtimeImageTableOffsets.push_back(image.indirectMappingOffset);
     }
     result.hostSubgroupSize = HostSubgroupSize(request);
     result.vertexOffsetSgpr = program.Info().vertexOffsetSgpr;
@@ -664,6 +666,7 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
         .imageMetadataDword = artifact.imageMetadataDword,
         .runtimeImageCount = artifact.runtimeImageCount,
         .runtimeImageResources = artifact.runtimeImageResources,
+        .runtimeImageTableOffsets = artifact.runtimeImageTableOffsets,
         .bdaAbiVersion = artifact.bdaAbiVersion,
         .runtimeAbiVersion = artifact.runtimeAbiVersion,
         .vertexInputs = artifact.vertexInputs,

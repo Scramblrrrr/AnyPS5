@@ -9,7 +9,7 @@
 
 namespace ShaderRecompiler::RuntimeAbi {
 
-inline constexpr std::uint32_t Version = 11u;
+inline constexpr std::uint32_t Version = 12u;
 inline constexpr std::uint32_t DescriptorSet = 0u;
 inline constexpr std::uint32_t StageCount = 4u;
 inline constexpr std::uint32_t PushConstantDwords = 32u;
@@ -35,6 +35,10 @@ inline constexpr std::uint32_t UserDataCapacity = 128u;
 inline constexpr std::uint32_t BufferCapacity = 128u;
 inline constexpr std::uint32_t ImageCapacity = 256u;
 inline constexpr std::uint32_t SampledHeapCapacity = 64u;
+inline constexpr std::uint32_t DenseTableFlag = 0x80000000u;
+inline constexpr std::uint32_t DenseTableEntryLimit = 524288u;
+inline constexpr std::uint32_t RuntimeSampledHeapCapacity = 65536u;
+inline constexpr std::uint32_t InvalidImageFlag = 0x80000000u;
 inline constexpr std::uint32_t BindlessTableSlots = 16u;
 inline constexpr std::uint32_t StorageMipSlots = 4u;
 inline constexpr std::uint32_t StorageHeapCapacity = 16u;
@@ -69,7 +73,7 @@ inline constexpr std::uint32_t ShaderDataDwords = sizeof(ShaderData) / sizeof(st
 
 inline std::uint32_t HeapCapacity(Binding binding) {
     const auto value = static_cast<std::uint32_t>(binding);
-    if (value >= FirstImageBinding && value < FirstStorageImageBinding) return SampledHeapCapacity;
+    if (value >= FirstImageBinding && value < FirstStorageImageBinding) return RuntimeSampledHeapCapacity;
     if (value >= FirstStorageImageBinding && value < static_cast<std::uint32_t>(Binding::Samplers)) return StorageHeapCapacity;
     if (binding == Binding::Samplers) return SamplerHeapCapacity;
     throw std::runtime_error("Shader runtime ABI: binding is not a typed heap");

@@ -465,6 +465,7 @@ struct CompiledShaderArtifact {
     std::uint32_t imageMetadataDword = 0;
     std::uint32_t runtimeImageCount = 0;
     std::vector<std::uint32_t> runtimeImageResources;
+    std::vector<std::uint32_t> runtimeImageTableOffsets;
     std::uint32_t bdaAbiVersion = 0;
     std::uint32_t runtimeAbiVersion = RuntimeAbi::Version;
     std::vector<VertexInput> vertexInputs;
