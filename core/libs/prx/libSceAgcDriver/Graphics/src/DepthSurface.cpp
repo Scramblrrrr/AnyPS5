@@ -519,6 +519,7 @@ std::shared_ptr<Texture> DepthSurfaceTexture(const Context& context, std::span<c
     const auto& base = (*found)->target;
     if (resource.width != base.extent.width || resource.height != base.extent.height) return nullptr;
     const bool stencil = base.stencilAddress != 0 && resource.baseAddress == base.stencilAddress;
+    if (stencil && BytesPerElement(resource.format) != 1u) return nullptr;
     const bool d16 = base.format == VK_FORMAT_D16_UNORM || base.format == VK_FORMAT_D16_UNORM_S8_UINT;
     const auto format = ResolveTextureFormat(resource.format);
     const bool depthBits = !stencil && words.size() >= 4 && ShaderRecompiler::DepthBitsTextureWidth(words[1], words[3]) == (d16 ? 16u : 32u);
