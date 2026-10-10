@@ -94,7 +94,7 @@ public:
 #endif
         Require(block != nullptr, "recorded kept bytes: cannot allocate a guest buffer");
         std::memset(block, 0, bytes);
-        if (registered) GuestAllocations::Mutation().Add(block, bytes, true, true);
+        if (registered) GuestAllocations::Mutation().Add(block, bytes, true, true, true);
     }
 
     ~GuestBuffer() {
