@@ -1148,6 +1148,7 @@ void resourceReadTests(const Device& device, Recorder& recorder) {
         GuestBufferMemory memory(context);
         memory.AddReadable(element, elementBytes);
         memory.Upload(false);
+        Require(memory.RetainedCopyBytes() == 0, "an imported guest range counts toward the copied buffer budget");
         const auto reads = memory.InPlaceReads();
         Require(reads.size() == 1 && reads[0].first == element && reads[0].second == element + elementBytes, "an imported region is not an in-place read");
         Require(memory.Writes().empty(), "a readable element counts as written");
