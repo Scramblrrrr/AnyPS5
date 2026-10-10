@@ -574,9 +574,11 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     guest[0] = 123;
     const auto address = reinterpret_cast<std::uintptr_t>(guest.data());
     GuestBufferMemory memory(context);
+    Require(memory.RetainedCopyBytes() == 0, "an empty guest buffer build retains copied bytes");
     memory.AddWritable(address, sizeof(guest));
     memory.AddWritable(address + 16, 16);
     memory.Upload(true);
+    Require(memory.RetainedCopyBytes() >= 2 * sizeof(guest), "the owned guest buffer and its CPU write-back copy are not counted");
     std::uint32_t adjustment = 0;
     const auto first = memory.Descriptor(address, sizeof(guest), adjustment);
     Require(adjustment == 0, "a view at its owner's start is bound off it");
@@ -591,6 +593,12 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     Require(guest[4] == changed, "aliased GPU write was not published");
     reject([&] { memory.WriteBack(); }, "cannot be committed twice");
     reject([&] { memory.AddWritable(address, sizeof(guest)); }, "frozen");
+    {
+        GuestBufferMemory snapshot(context);
+        snapshot.AddSnapshot({address, std::as_bytes(std::span(guest))});
+        snapshot.Upload(false);
+        Require(snapshot.RetainedCopyBytes() >= 2 * sizeof(guest), "the uploaded snapshot buffer and its retained CPU capacity are not counted");
+    }
     GuestBufferMemory overflow(context);
     const std::array<std::byte, 8> source{};
     reject([&] { overflow.AddSnapshot({std::numeric_limits<std::uint64_t>::max() - 3, source}); }, "overflow");

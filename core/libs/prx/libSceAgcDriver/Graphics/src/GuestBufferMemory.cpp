@@ -2742,7 +2742,7 @@ void GuestBufferMemory::recordGpuCopies(std::span<Region* const> copies, bool ad
             std::memcpy(inputSnapshot->Bytes().data(), reinterpret_cast<const void*>(address), static_cast<std::size_t>(bytes));
             copySource = inputSnapshot->Handle();
             copyOffset = 0;
-            recorder->Keep(inputSnapshot);
+            recorder->Keep(inputSnapshot, static_cast<std::size_t>(bytes));
             CaptureTrace::Log("copy-input-snapshot batch=%llu address=%llx bytes=%llu", batch, static_cast<unsigned long long>(address), static_cast<unsigned long long>(bytes));
         }
         if (capture && bytes == 32) {
@@ -2958,6 +2958,15 @@ std::optional<GuestBufferMemory::CachedTable> GuestBufferMemory::CachedAddressTa
         space->writeTables.emplace(writes, std::pair{writeTableSerial, writeTableRanges});
     }
     return CachedTable{writeTableSerial, writeTableRanges.get()};
+}
+
+std::size_t GuestBufferMemory::RetainedCopyBytes() const {
+    std::size_t bytes = 0;
+    for (const auto& region : regions) {
+        bytes += region.snapshot.capacity() + region.uploaded.capacity();
+        if (region.buffer != nullptr && region.direct == nullptr && region.mirror == nullptr) bytes += static_cast<std::size_t>(region.end - region.begin);
+    }
+    return bytes;
 }
 
 bool GuestBufferMemory::HasCopiedWrites() const {
