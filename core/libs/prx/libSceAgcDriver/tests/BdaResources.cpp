@@ -981,18 +981,22 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
         reject([&] { resources.CheckFaults(); }, "rect-list requires");
     }
     {
-        // A cached draw's use checks a fault buffer of its own against its own stages' poison.
-        Buffer own(context, ShaderRecompiler::BdaAbi::FaultBufferBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        std::memset(own.Bytes().data(), 0, own.Bytes().size());
+        // The image table fault check (CheckFault, and CheckUseFault for a cached draw's own
+        // buffer, share it) names the selected entry from the stage's poison list.
+        // A context of its own, as ShaderResources keeps: its buffer pool (and the fault buffer
+        // released into it) goes with the block.
+        auto local = context;
+        BdaResources faults(local);
         ShaderRecompiler::ImageTableEntryPoison poison{};
         poison.words[0] = 0x12345678u;
         poison.dwordCount = 1;
         poison.reason = static_cast<std::uint32_t>(ShaderRecompiler::ImageTableAbi::PoisonReason::NotImage);
-        const std::vector<BdaResources::ImageTableFaults> tables{{5u, 0xabcdu, {{}, {}, poison}, {}}};
-        BdaResources::CheckUseFault(own, tables, {});
+        faults.SetImageTables({{5u, 0xabcdu, {{}, {}, poison}, {}}}, {});
+        faults.CheckFault();
+        const auto own = access.bytes(faults.Fault().buffer);
         const ShaderRecompiler::BdaAbi::Fault selected{ShaderRecompiler::BdaAbi::FaultState::Ready, ShaderRecompiler::BdaAbi::FaultReason::ImageTable, 0x1000, 2, 5, 0x40, 0};
-        std::memcpy(own.Bytes().data(), &selected, sizeof(selected));
-        reject([&] { BdaResources::CheckUseFault(own, tables, {}); }, "(words 12345678): not an image");
+        std::memcpy(own.data(), &selected, sizeof(selected));
+        reject([&] { faults.CheckFault(); }, "(words 12345678): not an image");
         ShaderRecompiler::RecompileResult tableStage;
         tableStage.bindings = {binding(Role::FaultBuffer, 5), binding(Role::ImageTableMap, 7)};
         const CompiledShader tableCompiled{ShaderRecompiler::ShaderStage::Fragment, &tableStage, 0};
