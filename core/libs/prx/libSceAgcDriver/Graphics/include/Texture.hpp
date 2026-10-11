@@ -146,7 +146,7 @@ VkFormat AttachmentProxyFormat(const Context& context, VkFormat format);
 // or it leaves the cache. Dispatches reusing the image meanwhile skip the round trip entirely.
 class StorageTexture : public std::enable_shared_from_this<StorageTexture> {
 public:
-    StorageTexture(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, std::uint32_t mipLevel);
+    static std::shared_ptr<StorageTexture> Create(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, std::uint32_t mipLevel);
     ~StorageTexture();
     StorageTexture(const StorageTexture&) = delete;
     StorageTexture& operator=(const StorageTexture&) = delete;
@@ -332,6 +332,7 @@ public:
     VkDeviceSize AllocationBytes() const { return memoryBytes; }
 
 private:
+    StorageTexture(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, std::uint32_t mipLevel);
     // The regions of every array layer, or of the tracked layers `layers` selects.
     std::vector<VkBufferImageCopy> CopyRegions(const std::vector<bool>* layers = nullptr) const;
     // Uploads the surface, or only the tracked layers `layers` selects (the direct path; the others
