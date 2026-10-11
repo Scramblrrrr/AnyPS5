@@ -1463,6 +1463,14 @@ bool OpportunisticReap() {
 
 }
 
+void VulkanDevice::StoreIdleResults(bool reapFirst) {
+    if (!Graphics::StorageTexture::AnyPending()) return;
+    GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Flush);
+    std::lock_guard gpuLock(GuestMemory::GpuMutex());
+    Graphics::StorageTexture::FlushAllPending("idle");
+    SubmitRecorded(reapFirst);
+}
+
 void VulkanDevice::SubmitRecorded(bool reapFirst) {
     if (!state->recorder) return;
     // Finished batches are retired first (a non-blocking fence status check on the front of the
