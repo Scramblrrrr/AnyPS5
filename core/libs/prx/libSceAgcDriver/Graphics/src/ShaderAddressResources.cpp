@@ -5,8 +5,20 @@
 
 namespace AgcDriver::Graphics {
 
-void ShaderResources::prepareAddressBindings(std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots) {
+bool ShaderResources::StageChecksFaults(const ShaderRecompiler::RecompileResult& program) {
     static const bool loopGuarded = std::getenv("APS5_LOOP_GUARD") != nullptr;
+    bool tables = false;
+    bool faults = false;
+    bool tableFaultsOnly = false;
+    for (const auto& binding : program.bindings) {
+        tables = tables || binding.role == ShaderRecompiler::DescriptorRole::BdaPagetable;
+        faults = faults || binding.role == ShaderRecompiler::DescriptorRole::FaultBuffer;
+        tableFaultsOnly = tableFaultsOnly || binding.role == ShaderRecompiler::DescriptorRole::ImageTableMap;
+    }
+    return tables || (faults && (!tableFaultsOnly || program.imageTableFaults != 0 || program.poisonedSrtReads != 0 || loopGuarded));
+}
+
+void ShaderResources::prepareAddressBindings(std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots) {
     for (const auto& shader : shaders) {
         Require(shader.program != nullptr, "missing compiled shader");
         std::uint32_t tables = 0;
@@ -23,8 +35,9 @@ void ShaderResources::prepareAddressBindings(std::span<const CompiledShader> sha
         // Rect-list validation needs a fault buffer, but never accesses guest addresses.
         usesBda = usesBda || tables != 0;
         usesFaultBuffer = usesFaultBuffer || faults != 0;
-        const bool tableFaultsOnly = std::any_of(shader.program->bindings.begin(), shader.program->bindings.end(), [](const ShaderRecompiler::DescriptorBinding& binding) { return binding.role == ShaderRecompiler::DescriptorRole::ImageTableMap; });
-        faultChecks = faultChecks || tables != 0 || (faults != 0 && (!tableFaultsOnly || shader.program->imageTableFaults != 0 || shader.program->poisonedSrtReads != 0 || loopGuarded));
+        faultChecks = faultChecks || StageChecksFaults(*shader.program);
+        const bool tableMap = std::any_of(shader.program->bindings.begin(), shader.program->bindings.end(), [](const ShaderRecompiler::DescriptorBinding& binding) { return binding.role == ShaderRecompiler::DescriptorRole::ImageTableMap; });
+        untabledFaults = untabledFaults || (faults != 0 && !tableMap);
     }
     if (usesBda) {
         Require(context.bufferDeviceAddress, "buffer device address is not enabled");

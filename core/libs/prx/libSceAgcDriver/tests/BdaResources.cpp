@@ -1,5 +1,6 @@
 #include "BdaTests.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp"
+#include "ImageTableAbi.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libc/include/GuestHeap.hpp"
 #include "prx/libc/include/GuestArena.hpp"
@@ -978,6 +979,27 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
         const ShaderRecompiler::BdaAbi::Fault report{ShaderRecompiler::BdaAbi::FaultState::Ready, ShaderRecompiler::BdaAbi::FaultReason::InvalidRectangle, 0, 0, 0, 0, 0};
         std::memcpy(fault.data(), &report, sizeof(report));
         reject([&] { resources.CheckFaults(); }, "rect-list requires");
+    }
+    {
+        // A cached draw's use checks a fault buffer of its own against its own stages' poison.
+        Buffer own(context, ShaderRecompiler::BdaAbi::FaultBufferBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        std::memset(own.Bytes().data(), 0, own.Bytes().size());
+        ShaderRecompiler::ImageTableEntryPoison poison{};
+        poison.words[0] = 0x12345678u;
+        poison.dwordCount = 1;
+        poison.reason = static_cast<std::uint32_t>(ShaderRecompiler::ImageTableAbi::PoisonReason::NotImage);
+        const std::vector<BdaResources::ImageTableFaults> tables{{5u, 0xabcdu, {{}, {}, poison}, {}}};
+        BdaResources::CheckUseFault(own, tables, {});
+        const ShaderRecompiler::BdaAbi::Fault selected{ShaderRecompiler::BdaAbi::FaultState::Ready, ShaderRecompiler::BdaAbi::FaultReason::ImageTable, 0x1000, 2, 5, 0x40, 0};
+        std::memcpy(own.Bytes().data(), &selected, sizeof(selected));
+        reject([&] { BdaResources::CheckUseFault(own, tables, {}); }, "(words 12345678): not an image");
+        ShaderRecompiler::RecompileResult tableStage;
+        tableStage.bindings = {binding(Role::FaultBuffer, 5), binding(Role::ImageTableMap, 7)};
+        const CompiledShader tableCompiled{ShaderRecompiler::ShaderStage::Fragment, &tableStage, 0};
+        Require(!ShaderResources::NeverReusable(std::span<const CompiledShader>(&tableCompiled, 1)), "an image table stage's fault buffer is refused the resource cache");
+        Require(!ShaderResources::StageChecksFaults(tableStage), "an image table stage without faulting entries checks its fault buffer");
+        tableStage.imageTableFaults = 1;
+        Require(ShaderResources::StageChecksFaults(tableStage), "an image table stage with faulting entries does not check its fault buffer");
     }
     {
         ShaderResources resources(context, compiled, snapshots);

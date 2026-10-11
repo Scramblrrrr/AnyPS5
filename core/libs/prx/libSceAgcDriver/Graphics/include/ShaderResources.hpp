@@ -136,6 +136,14 @@ public:
         DescriptorCache* cache = nullptr;
         DescriptorCache::SetAllocation allocation;
         std::vector<Snapshot> snapshots;
+        // A cached object's use whose stages check faults: the zeroed fault buffer this use's set
+        // binds instead of the object's own (which only its build's use wrote), and the use's own
+        // image table diagnostics, copied from its stages (their programs may be gone by the time
+        // the batch completes). CheckFault runs BdaResources::CheckUseFault over them.
+        std::shared_ptr<Buffer> fault;
+        std::vector<BdaResources::ImageTableFaults> faultTables;
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> faultRanges;
+        void CheckFault() const;
         ~DrawBindings();
     };
     struct MovedBuffer {
@@ -144,7 +152,9 @@ public:
         std::size_t size;
         std::vector<std::uint32_t> words;
     };
-    std::shared_ptr<DrawBindings> PrepareDrawBindings(Recorder& recorder, std::span<const MovedBuffer> moved = {}) const;
+    // `faultStages` (a cached object's use whose stages check faults, see PerUseFaults): the set
+    // binds a fault buffer of this use's own, and the result is never null.
+    std::shared_ptr<DrawBindings> PrepareDrawBindings(Recorder& recorder, std::span<const MovedBuffer> moved = {}, std::span<const CompiledShader> faultStages = {}) const;
     std::optional<std::vector<MovedBuffer>> MovedReadOnlyBuffers(std::span<const CompiledShader> shaders, Recorder& recorder) const;
     void WriteBack();
     // Deferred completion: MarkGpuWrites registers the results the recorded work leaves on the GPU
@@ -152,6 +162,9 @@ public:
     // once the work completed.
     void MarkGpuWrites(Recorder& recorder);
     void WriteBackBuffers();
+    // The fault check of WriteBackBuffers alone: a recorded use of a PerUseFaults object through
+    // its own set (its build's use), whose guest memory must stay uncommitted for later uses.
+    void CheckOwnFault() const { if (bda) bda->CheckFault(); }
     // Whether WriteBackBuffers has anything the CPU must see (copied written buffers, BDA faults).
     bool NeedsCompletion() const { return (bda != nullptr && faultChecks) || guestMemory.HasCopiedWrites(); }
     // Whether a written buffer was copied (its results reach guest memory by the CPU write-back).
@@ -159,6 +172,13 @@ public:
     bool HoldsLease() const { return guestMemory.HoldsLease(); }
     bool UsesAddressTable() const { return usesBda; }
     std::size_t CopiedBytes() const { return guestMemory.CopiedBytes(); }
+    // Whether the set binds a fault buffer (image tables, guarded SRT reads, rect-list validation;
+    // address-based builds too, which are never cached).
+    bool HasFaultBuffer() const { return bda != nullptr; }
+    // Whether a stage's fault buffer is read back at completion (the build's faultChecks): always
+    // with a BDA table; for a fault buffer that serves image tables alone, only when the tables
+    // hold entries that fault, the SRT reads were guarded, or APS5_LOOP_GUARD is set.
+    static bool StageChecksFaults(const ShaderRecompiler::RecompileResult& program);
     bool WritesOverlap(std::uint64_t address, std::size_t bytes) const { return guestMemory.WritesOverlap(address, bytes); }
     // Whether a region the recorded work reads in place through a host import overlaps the range.
     bool ReadsOverlap(std::uint64_t address, std::size_t bytes) const;
@@ -195,6 +215,14 @@ public:
     // ranges are fixed by the build), so a Revalidate's collects on the same worker are memo hits.
     void PrecollectSurfaces() const;
     bool Reusable() const { return reusable; }
+    // A draw object that is reusable but for its image table fault checks: the resource cache keeps
+    // it for draws, each use binding a fault buffer of its own through PrepareDrawBindings and
+    // checking it when its batch completed. Reusable() stays false, so dispatches and recipes,
+    // which run the object's own completion or none, never take it.
+    bool PerUseFaults() const { return perUseFaults; }
+    // Draw stages whose objects the cache can never serve: an address-based stage (BDA table, lease)
+    // or a fault buffer without image tables (rect-list validation, guarded SRT reads alone), whose
+    // checks always run. An image table stage's fault buffer is no obstacle (see PerUseFaults).
     static bool NeverReusable(std::span<const CompiledShader> shaders);
     const std::vector<std::shared_ptr<Texture>>& SampledTextures() const { return textures; }
     bool ChecksFaults() const { return bda != nullptr; }
@@ -453,6 +481,13 @@ private:
     bool usesBda = false;
     bool usesFaultBuffer = false;
     bool faultChecks = false;
+    // A fault check this build added beyond its stages' own (an entry the driver rejected, a table
+    // written by its own dispatch): it rests on lookups made now, so the object is never kept.
+    bool buildFaults = false;
+    // A stage binds a fault buffer without image tables (rect-list validation, guarded SRT reads
+    // alone): its checks are never moved to the uses (see NeverReusable).
+    bool untabledFaults = false;
+    bool perUseFaults = false;
     VkDescriptorSetLayout _layout = VK_NULL_HANDLE;
     // Whether the layout is this object's own (no cache) and destroyed with it.
     bool ownsLayout = false;

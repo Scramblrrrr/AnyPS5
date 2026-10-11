@@ -25,6 +25,10 @@ public:
         std::vector<std::string> messages;
     };
     void SetImageTables(std::vector<ImageTableFaults> tables, std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges);
+    // CheckFault over the fault buffer of one use of a shared object (a cached draw's own buffer,
+    // see ShaderResources::PrepareDrawBindings), with that use's image table diagnostics. Shared
+    // objects never bind a page table, so a Permission fault has no ranges to name.
+    static void CheckUseFault(Buffer& fault, const std::vector<ImageTableFaults>& tables, const std::vector<std::pair<std::uint64_t, std::uint64_t>>& ranges);
     // APS5_PROFILE_DRAW: page tables served from the per-device cache and built anew (cumulative),
     // and how many recent tables the cache holds right now.
     struct TableCacheStats {
@@ -48,10 +52,11 @@ public:
     static TableCacheStats TableCacheCounters();
 
 private:
+    static void checkFault(Buffer& fault, const std::vector<ImageTableFaults>& imageTables, const std::vector<std::pair<std::uint64_t, std::uint64_t>>& imageTableRanges, Buffer* pageTable);
+    static void markWrittenPages(Buffer& fault, const std::vector<std::pair<std::uint64_t, std::uint64_t>>& imageTableRanges);
     // The page table is read-only to the shader, so consecutive builds mapping the same ranges to the
     // same device addresses share one buffer while one of them is alive (see the table cache in
     // BdaResources.cpp, which refers to it weakly).
-    void markWrittenPages() const;
     std::shared_ptr<Buffer> table;
     std::unique_ptr<Buffer> fault;
     std::size_t tableBytes = 0;

@@ -1230,6 +1230,8 @@ struct ResolvedResources {
     std::vector<ShaderResources::MovedBuffer> moved;
     ResourceCache::Key contentKey;
     bool cacheable = false;
+    // The resource cache served `resources` (it is shared with other uses).
+    bool hit = false;
     const ShaderResources::BuildTiming* built = nullptr;
 };
 
@@ -1259,6 +1261,7 @@ ResolvedResources resolveDrawResources(const Context& context, const State& stat
                 if (trimKey) CheckBufferAliases(shaders, state.color, draw.indexAddress, indexBytes);
                 resolved.resources = std::move(cached);
                 resolved.moved = std::move(*moved);
+                resolved.hit = true;
                 outcome.kind = KindTemplateHit;
                 countCache(&DrawProfile::cacheHits);
             } else if (valid) {
@@ -1497,6 +1500,12 @@ void keepRecordedDraw(Recorder& recorder, const std::shared_ptr<ShaderResources>
             resources->WriteBackBuffers();
         });
         writers->push_back(resources);
+    } else if (completion && resources->PerUseFaults()) {
+        // The build's own use of an object the resource cache keeps for later uses: only its fault
+        // check. A write-back would commit its guest memory, which ends the in-place read notes
+        // those uses make; there is nothing to write back (no copied writes, and MarkGpuWrites
+        // marked the direct writes).
+        recorder.OnComplete([resources] { resources->CheckOwnFault(); });
     } else if (completion) {
         if (resources->Reusable()) recorder.OnComplete([resources] { resources->CheckFaults(); });
         else recorder.OnComplete([resources] { resources->WriteBackBuffers(); });
@@ -1522,6 +1531,9 @@ struct RecordedDraw {
     std::span<const ShaderResources::MovedBuffer> moved;
     bool listed = false;
     bool completion = false;
+    // A cached object's use whose stages check faults: its set binds a fault buffer of its own,
+    // checked at completion (ShaderResources::DrawBindings::CheckFault).
+    bool perUseFault = false;
     bool waited = false;
     const std::array<std::byte, PipelinePushConstantBytes>* pushBytes = nullptr;
     VkShaderStageFlags pushStages = 0;
@@ -1582,6 +1594,8 @@ void captureInputs(const Context& context, Recorder& recorder, VkCommandBuffer c
     };
     if (bindings != nullptr) {
         for (const auto& snapshot : bindings->snapshots) {
+            // A use's own fault buffer is the shaders' output, not an input.
+            if (snapshot.buffer == bindings->fault) continue;
             const auto bytes = snapshot.buffer->Bytes();
             addSample(snapshot.address, bytes.size(), snapshot.buffer->Handle(), 0, bytes.data());
         }
@@ -1654,7 +1668,7 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     if (recorder->HasQueuedKeyStores() && (resources.HoldsLease() || recorder->AnyQueuedKeyStore(touches))) recorder->FlushKeyStores();
     // A queued label store over such memory likewise (Recorder::RecordStore).
     if (recorder->HasQueuedStores() && (resources.HoldsLease() || recorder->AnyQueuedStore(touches))) recorder->FlushStores();
-    const auto drawBindings = resources.PrepareDrawBindings(*recorder, record.moved);
+    const auto drawBindings = resources.PrepareDrawBindings(*recorder, record.moved, record.perUseFault ? shaders : std::span<const CompiledShader>{});
     const bool capture = CaptureInputsEnabled();
     const bool meshIndirect = state.stages.mesh && args != nullptr;
     const bool addressBased = resources.HoldsLease();
@@ -1758,6 +1772,8 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     recorder->LeaveRenderPassOpen(passKey, drawTiming, fenced, passAccess, std::move(storeProxies));
     timer.phase(PhaseRecord);
     keepRecordedDraw(*recorder, record.resources, std::move(record.pipeline), std::move(record.framebuffer), inputs, std::move(record.targets), std::move(scratch), std::move(checkRecords), record.listed, record.completion, outcome);
+    // A fault is reported by the recorder ("deferred write-back failed"), as the object's own check.
+    if (record.perUseFault) recorder->OnComplete([drawBindings] { drawBindings->CheckFault(); });
     timer.phase(PhaseKeep);
     if (record.waited) {
         // The wait the dispatch path makes for such work (source 3, "address-based"): the
@@ -2018,7 +2034,11 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     static const bool syncCompletionDraws = std::getenv("APS5_SYNC_COMPLETION_DRAWS") != nullptr;
     static const bool recorderSyncDraws = std::getenv("APS5_NO_RECORDER_SYNC_DRAWS") == nullptr;
     static const bool recordCopiedDraws = std::getenv("APS5_NO_RECORD_COPIED_DRAWS") == nullptr;
-    const bool completion = resources->NeedsCompletion();
+    // A cached object never runs its own completion for a later use: a reusable one has none, and
+    // one kept for its image table fault checks (PerUseFaults) gives each use whose stages check
+    // faults a fault buffer of its own (recordDraw), checked when the batch completed.
+    const bool perUseFault = resolved.hit && resources->HasFaultBuffer() && std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program != nullptr && ShaderResources::StageChecksFaults(*shader.program); });
+    const bool completion = resolved.hit ? perUseFault : resources->NeedsCompletion();
     const bool copiedWrites = completion && resources->HasCopiedWrites();
     // A lease only forces the wait when deferred release is off.
     const bool lease = resources->HoldsLease() && SyncLeaseWork();
@@ -2028,7 +2048,7 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     bool listed = false;
     if (!recordable) {
         outcome.reason = !recordDraws || dumpLimit != 0 ? SyncDisabled : recorder == nullptr ? SyncNoRecorder : SyncNotResident;
-    } else if (completion && (syncCompletionDraws || copiedWrites || lease)) {
+    } else if (completion && !perUseFault && (syncCompletionDraws || copiedWrites || lease)) {
         outcome.reason = syncCompletionDraws ? SyncDisabled : lease ? SyncLease : SyncCopiedWrites;
         if (syncCompletionDraws) outcome.recorded = false;
         else if (copiedWrites && !lease && recordCopiedDraws) listed = true;
@@ -2038,14 +2058,17 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     const bool recorded = outcome.recorded;
     // A build this recorded draw can share with later identical ones goes into the cache (a cache
     // hit is reusable by construction, so `recorded` holds for it; one with completion work is
-    // never reusable).
-    if (cacheable && built != nullptr && recorded && resources->Reusable()) SharedResourceCache().Insert(contentKey, resources);
+    // never reusable, except that a draw's image table fault checks move to each use, see
+    // ShaderResources::PerUseFaults).
+    if (cacheable && built != nullptr && recorded && (resources->Reusable() || resources->PerUseFaults())) SharedResourceCache().Insert(contentKey, resources);
     // A recorded draw renders into its resident targets in the general layout (recordDraw). Debug
     // aid: APS5_DRAW_TRANSITIONS=1 keeps the per-draw upload and download barriers, the layout
     // transitions of every target and one pass per draw, as before.
     static const bool drawTransitions = std::getenv("APS5_DRAW_TRANSITIONS") != nullptr;
     const bool lean = recorded && !drawTransitions;
-    if (!lean && !resolved.moved.empty()) {
+    // The unrecorded path binds the object's own set, so a use that needs a fault buffer of its own
+    // gets a build of its own there too.
+    if (!lean && (!resolved.moved.empty() || perUseFault)) {
         resolved.resources = std::make_shared<ShaderResources>(context, shaders, state.color, static_cast<std::uint32_t>(state.colors.size()), draw.indexAddress, static_cast<std::size_t>(indexBytes), snapshots);
         resolved.moved.clear();
     }
@@ -2083,14 +2106,15 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
         }
         record.indirect = args != nullptr ? &indirect : nullptr;
         record.listed = listed;
-        record.completion = completion;
+        record.completion = completion && !perUseFault;
+        record.perUseFault = perUseFault;
         record.waited = outcome.waited;
         recordDraw(context, state, draw, shaders, inputs, record, outcome, timer, ownWaitedMs);
         // The recipe for the caller's draw-cache entry (design_cpu_final M8, rule R3 for draws):
         // only a template the resource cache serves under this content key (reusable: no lease,
         // no copied writes, every direct region import- or mirror-served) of a direct draw, so a
         // hit's proof is the template's ProveCurrent and nothing needs completion work.
-        if (recipeOut != nullptr && DrawRecipes() && cacheable && !outcome.waited && args == nullptr && resources->Reusable() && !state.depth && resolved.moved.empty()) {
+        if (recipeOut != nullptr && DrawRecipes() && cacheable && !outcome.waited && args == nullptr && resources->Reusable() && !resources->HasFaultBuffer() && !state.depth && resolved.moved.empty()) {
             auto recipe = std::make_shared<DrawRecipe>();
             recipe->device = context.device;
             recipe->templateRef = resources;
