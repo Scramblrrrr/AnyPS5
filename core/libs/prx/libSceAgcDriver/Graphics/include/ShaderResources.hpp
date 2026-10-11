@@ -169,6 +169,7 @@ public:
     std::vector<std::pair<VkImage, bool>> StorageImages() const;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> DeviceReads() const { return guestMemory.DeviceReads(); }
     bool ReadsImage(const StorageTexture* image) const;
+    bool HoldsEvictedStorage() const;
     const std::vector<std::uint32_t>& LayoutKey() const { return layoutKey; }
     // Debug aid: each bound guest resource with the fraction of sampled bytes that are nonzero.
     std::string Describe() const;

@@ -778,8 +778,11 @@ std::list<CachedStorageTexture>::iterator findStorageByImage(StorageTextureCache
 }
 
 // Evicts an entry: its pending results go to guest memory first (the image may die with the entry).
+std::atomic<std::uint64_t> storageEvictions{0};
+
 std::shared_ptr<StorageTexture> evictStorage(StorageTextureCache& cache, std::list<CachedStorageTexture>::iterator it) {
     auto texture = it->texture;
+    storageEvictions.fetch_add(1, std::memory_order_relaxed);
     it->texture->SetCached(false);
     noteUncached(it->texture);
     it->texture->Flush();
@@ -2811,8 +2814,26 @@ void ResourceCache::noteMiss(const Key& key) {
     report("draws", churn.draws);
 }
 
+bool ShaderResources::HoldsEvictedStorage() const {
+    for (const auto& image : storageTextures) if (image != nullptr && !image->Cached()) return true;
+    return false;
+}
+
 void ResourceCache::Insert(const Key& key, std::shared_ptr<ShaderResources> resources, std::vector<std::shared_ptr<ShaderResources>>* evicted) {
     std::lock_guard lock(mutex);
+    static std::uint64_t purgedAt = 0;
+    if (const auto now = storageEvictions.load(std::memory_order_relaxed); now != purgedAt) {
+        purgedAt = now;
+        for (auto it = entries.begin(); it != entries.end();) {
+            if (it->second != nullptr && it->second->HoldsEvictedStorage()) {
+                if (evicted != nullptr) evicted->push_back(std::move(it->second));
+                index.erase(it->first);
+                it = entries.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
     if (const auto found = index.find(key); found != index.end()) {
         if (evicted != nullptr) evicted->push_back(std::move(found->second->second));
         entries.erase(found->second);
