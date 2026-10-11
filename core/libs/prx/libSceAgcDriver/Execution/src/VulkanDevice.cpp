@@ -3780,6 +3780,8 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
         check(state->DeviceFunction<PFN_vkCreatePipelineLayout>("vkCreatePipelineLayout")(state->device, &layoutInfo, nullptr, &objects->layout), "vkCreatePipelineLayout");
         VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         pipelineInfo.flags = context.pipelineExecutableInfo ? VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR : 0;
+        static const bool disableOptimization = std::getenv("APS5_NO_COMPUTE_PIPELINE_OPT") != nullptr;
+        if (disableOptimization) pipelineInfo.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         pipelineInfo.stage.module = objects->module;
