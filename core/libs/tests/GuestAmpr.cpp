@@ -3,6 +3,7 @@
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -33,6 +34,8 @@ std::uint64_t APS5_VABI sceAmprMeasureCommandSizePopMarker();
 std::uint64_t APS5_VABI sceAmprMeasureCommandSizeSetMarker(const char*);
 std::uint64_t APS5_VABI sceAmprMeasureCommandSizeSetMarkerWithColor(const char*, std::uint32_t);
 int APS5_VABI sceKernelAprSubmitCommandBuffer(const Apr::CommandBufferObject*, std::uint32_t);
+int APS5_VABI sceKernelAprSubmitCommandBufferAndGetId(const Apr::CommandBufferObject*, std::uint32_t, std::uint32_t*);
+int APS5_VABI sceKernelAprWaitCommandBuffer(std::uint32_t);
 int APS5_VABI sceAmprCommandBufferWaitOnAddress(Apr::CommandBufferObject*, volatile std::uint64_t*, std::uint64_t, std::uint8_t, std::uint8_t);
 int APS5_VABI sceAmprCommandBufferWaitOnCounter(Apr::CommandBufferObject*, std::uint8_t, std::uint32_t, std::uint8_t, std::uint8_t);
 int APS5_VABI sceAmprCommandBufferWriteCounterOnCompletion(Apr::CommandBufferObject*, std::uint8_t, std::uint32_t);
@@ -299,6 +302,53 @@ void TestWaits() {
     auto submitted = std::async(std::launch::async, [&]() { return sceKernelAprSubmitCommandBuffer(&recorder.buffer, 0); });
     Require(submitted.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
     Require(submitted.get() == 0 && done == 1);
+}
+
+void TestWaitSatisfiedAfterSubmission() {
+    Recorder first;
+    Recorder second;
+    alignas(8) std::uint64_t flag = 0;
+    alignas(8) std::uint64_t done = 0;
+    alignas(8) std::uint64_t later = 0;
+    Require(sceAmprCommandBufferWaitOnAddress(&first.buffer, &flag, 1, 0, 0) == 0);
+    Require(sceAmprCommandBufferWriteAddressOnCompletion(&first.buffer, &done, 1) == 0);
+    Require(sceAmprCommandBufferWriteAddressOnCompletion(&second.buffer, &later, 2) == 0);
+    std::uint32_t firstId = 0;
+    auto submitted = std::async(std::launch::async, [&]() { return sceKernelAprSubmitCommandBufferAndGetId(&first.buffer, 0, &firstId); });
+    const bool returned = submitted.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    if (!returned) std::atomic_ref<std::uint64_t>(flag).store(1, std::memory_order_release);
+    Require(returned);
+    Require(submitted.get() == 0 && firstId != 0);
+    std::uint32_t secondId = 0;
+    Require(sceKernelAprSubmitCommandBufferAndGetId(&second.buffer, 0, &secondId) == 0 && secondId > firstId);
+    Require(std::atomic_ref<std::uint64_t>(done).load(std::memory_order_acquire) == 0);
+    Require(std::atomic_ref<std::uint64_t>(later).load(std::memory_order_acquire) == 0);
+    std::atomic_ref<std::uint64_t>(flag).store(1, std::memory_order_release);
+    Require(sceKernelAprWaitCommandBuffer(secondId) == 0);
+    Require(done == 1 && later == 2);
+    Require(sceKernelAprWaitCommandBuffer(firstId) == 0);
+}
+
+void TestAmmNotBehindAprWait() {
+    Recorder reader;
+    Recorder maps;
+    alignas(8) std::uint64_t flag = 0;
+    alignas(8) std::uint64_t done = 0;
+    Require(sceAmprCommandBufferWaitOnAddress(&reader.buffer, &flag, 1, 0, 0) == 0);
+    Require(sceAmprCommandBufferWriteAddressOnCompletion(&reader.buffer, &done, 1) == 0);
+    Require(sceAmprAmmCommandBufferConstructor(&maps.buffer) == 0);
+    Require(sceAmprCommandBufferWriteAddressOnCompletion(&maps.buffer, &flag, 1) == 0);
+    std::uint32_t readerId = 0;
+    Require(sceKernelAprSubmitCommandBufferAndGetId(&reader.buffer, 0, &readerId) == 0 && readerId != 0);
+    std::uint32_t mapsId = 0;
+    Require(sceAmprAmmSubmitCommandBuffer3(maps.memory.data(), maps.Offset(), 0, &mapsId) == 0 && mapsId != 0);
+    auto completed = std::async(std::launch::async, [&]() { return sceAmprAmmWaitCommandBufferCompletion(mapsId); });
+    const bool returned = completed.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    if (!returned) std::atomic_ref<std::uint64_t>(flag).store(1, std::memory_order_release);
+    Require(returned);
+    Require(completed.get() == 0);
+    Require(sceKernelAprWaitCommandBuffer(readerId) == 0);
+    Require(done == 1);
 }
 
 void TestCounters() {
@@ -1049,6 +1099,8 @@ int main() {
     TestSubmission();
     TestKernelEventQueue();
     TestWaits();
+    TestWaitSatisfiedAfterSubmission();
+    TestAmmNotBehindAprWait();
     TestCounters();
     TestRejectedWaitsAndCounters();
     TestNops();
