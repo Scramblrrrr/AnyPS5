@@ -48,6 +48,10 @@ void CheckRoundTrip() {
     capture.sets = {{VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
                      {{3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5, VK_SHADER_STAGE_COMPUTE_BIT, VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT},
                       {7, VK_DESCRIPTOR_TYPE_SAMPLER, 2, VK_SHADER_STAGE_COMPUTE_BIT, 0}}}};
+    capture.sets.push_back({0, {{15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 64, VK_SHADER_STAGE_COMPUTE_BIT, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT}}});
+    auto invalidVariable = capture;
+    invalidVariable.sets.back().bindings.push_back({16, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0});
+    Reject([&] { invalidVariable.Validate(); }, "a variable descriptor binding below another binding was accepted");
     capture.pushConstants = {{VK_SHADER_STAGE_COMPUTE_BIT, 16, 32}};
     const auto encoded = capture.Encode();
     const auto decoded = AgcDriver::ComputePipelineCapture::Decode(encoded);

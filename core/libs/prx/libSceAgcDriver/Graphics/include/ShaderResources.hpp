@@ -122,6 +122,7 @@ public:
     ShaderResources& operator=(const ShaderResources&) = delete;
     VkDescriptorSetLayout Layout() const;
     std::vector<VkDescriptorSetLayoutBinding> LayoutBindings() const;
+    std::vector<VkDescriptorBindingFlags> LayoutBindingFlags() const;
     bool LayoutUpdateAfterBind() const;
     void Bind(VkCommandBuffer commands, VkPipelineBindPoint bindPoint, VkPipelineLayout layout) const;
     struct DrawBindings {

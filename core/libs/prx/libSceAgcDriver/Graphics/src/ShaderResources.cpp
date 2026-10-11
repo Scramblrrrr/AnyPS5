@@ -3893,6 +3893,12 @@ std::vector<VkDescriptorSetLayoutBinding> ShaderResources::LayoutBindings() cons
     return result;
 }
 
+std::vector<VkDescriptorBindingFlags> ShaderResources::LayoutBindingFlags() const {
+    std::vector<VkDescriptorBindingFlags> result;
+    for (const auto& binding : bindings) result.push_back(binding.flags);
+    return result;
+}
+
 bool ShaderResources::LayoutUpdateAfterBind() const {
     return updateAfterBind;
 }

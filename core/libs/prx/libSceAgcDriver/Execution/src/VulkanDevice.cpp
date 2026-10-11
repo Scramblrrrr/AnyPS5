@@ -785,6 +785,8 @@ ComputePipelineReplayResult VulkanDevice::ReplayComputePipeline(const ComputePip
         for (const auto& binding : layout.bindings) {
             bindings.push_back({binding.binding, binding.type, binding.count, binding.stages, nullptr});
             flags.push_back(binding.flags);
+            require((binding.flags & VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT) == 0 || state->partiallyBound, "captured partially-bound descriptors are unsupported");
+            require((binding.flags & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) == 0 || state->variableDescriptorCount, "captured variable-count descriptors are unsupported");
             const std::size_t kind = binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ? 0 : binding.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ? 1 : binding.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ? 2 : 3;
             descriptorCounts[updateAfterBind ? 1 : 0][kind] += binding.count;
         }
@@ -792,7 +794,7 @@ ComputePipelineReplayResult VulkanDevice::ReplayComputePipeline(const ComputePip
         bindingFlags.bindingCount = static_cast<std::uint32_t>(flags.size());
         bindingFlags.pBindingFlags = flags.data();
         VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        info.pNext = updateAfterBind ? &bindingFlags : nullptr;
+        info.pNext = std::any_of(flags.begin(), flags.end(), [](auto value) { return value != 0; }) ? &bindingFlags : nullptr;
         info.flags = layout.flags;
         info.bindingCount = static_cast<std::uint32_t>(bindings.size());
         info.pBindings = bindings.data();
@@ -4066,9 +4068,11 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
             capture.spirv = shader.spirv;
             ComputeDescriptorSetLayout resourcesLayout;
             resourcesLayout.flags = resources->LayoutUpdateAfterBind() ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT : 0;
+            const auto capturedFlags = resources->LayoutBindingFlags();
+            std::size_t capturedIndex = 0;
             for (const auto& binding : resources->LayoutBindings()) {
                 require(binding.pImmutableSamplers == nullptr, "compute capture does not support immutable samplers");
-                const VkDescriptorBindingFlags flags = resources->LayoutUpdateAfterBind() && binding.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ? VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT : 0;
+                const VkDescriptorBindingFlags flags = capturedFlags.at(capturedIndex++);
                 resourcesLayout.bindings.push_back({binding.binding, binding.descriptorType, binding.descriptorCount, binding.stageFlags, flags});
             }
             capture.sets.push_back(std::move(resourcesLayout));
