@@ -238,9 +238,17 @@ bool LoopGuardTripped() {
 }
 
 void BdaResources::CheckFault() const {
-    markWrittenPages();
+    checkFault(*fault, imageTables, imageTableRanges, table.get());
+}
+
+void BdaResources::CheckUseFault(Buffer& fault, const std::vector<ImageTableFaults>& tables, const std::vector<std::pair<std::uint64_t, std::uint64_t>>& ranges) {
+    checkFault(fault, tables, ranges, nullptr);
+}
+
+void BdaResources::checkFault(Buffer& fault, const std::vector<ImageTableFaults>& imageTables, const std::vector<std::pair<std::uint64_t, std::uint64_t>>& imageTableRanges, Buffer* pageTable) {
+    markWrittenPages(fault, imageTableRanges);
     ShaderRecompiler::BdaAbi::Fault report{};
-    std::memcpy(&report, fault->Bytes().data(), sizeof(report));
+    std::memcpy(&report, fault.Bytes().data(), sizeof(report));
     if (report.state == ShaderRecompiler::BdaAbi::FaultState::Empty) {
         Require(static_cast<std::uint32_t>(report.reason) == 0 && report.address == 0 && report.bytes == 0 && report.stage == 0 && report.instruction == 0 && report.reserved == 0, "BDA fault record has data without publication");
         return;
@@ -251,7 +259,7 @@ void BdaResources::CheckFault() const {
         // APS5_LOOP_GUARD: the shader left a loop that ran past the guard; the dispatch result is kept.
         loopGuardTripped.store(true, std::memory_order_relaxed);
         std::fprintf(stderr, "[gpu] loop guard: the loop exit at pc 0x%x of shader 0x%llx ran past %u evaluations\n", report.instruction, static_cast<unsigned long long>(report.address), report.bytes);
-        std::memset(fault->Bytes().data(), 0, fault->Bytes().size());
+        std::memset(fault.Bytes().data(), 0, fault.Bytes().size());
         return;
     }
     if (report.reason == ShaderRecompiler::BdaAbi::FaultReason::ImageTable) {
@@ -275,8 +283,8 @@ void BdaResources::CheckFault() const {
     }
     std::ostringstream message;
     message << "BDA access failed: address=0x" << std::hex << report.address << " instruction=0x" << report.instruction << std::dec << " bytes=" << report.bytes << " stage=" << report.stage << " reason=" << static_cast<std::uint32_t>(report.reason);
-    if (report.reason == ShaderRecompiler::BdaAbi::FaultReason::Permission && table != nullptr) {
-        const auto bytes = table->Bytes();
+    if (report.reason == ShaderRecompiler::BdaAbi::FaultReason::Permission && pageTable != nullptr) {
+        const auto bytes = pageTable->Bytes();
         ShaderRecompiler::BdaAbi::Header header{};
         std::memcpy(&header, bytes.data(), sizeof(header));
         for (std::uint32_t index = 0; index < header.count; ++index) {
@@ -299,9 +307,9 @@ void BdaResources::SetImageTables(std::vector<ImageTableFaults> tables, std::vec
     imageTableRanges = std::move(ranges);
 }
 
-void BdaResources::markWrittenPages() const {
+void BdaResources::markWrittenPages(Buffer& fault, const std::vector<std::pair<std::uint64_t, std::uint64_t>>& imageTableRanges) {
     namespace Abi = ShaderRecompiler::BdaAbi;
-    auto* words = reinterpret_cast<std::uint32_t*>(fault->Bytes().data());
+    auto* words = reinterpret_cast<std::uint32_t*>(fault.Bytes().data());
     Require(words[Abi::WrittenOverflowWord] == 0, "more than " + std::to_string(Abi::WrittenPageSlots) + " pages stored to through the BDA table in one use are not implemented");
     bool any = false;
     for (std::uint32_t slot = 0; slot < Abi::WrittenPageSlots; ++slot) {

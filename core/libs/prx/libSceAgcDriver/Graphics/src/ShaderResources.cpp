@@ -1795,8 +1795,13 @@ void ShaderResources::noteReusable() {
     // Taken whether or not the object turns out reusable: the lookups' records are this build's.
     captureValidation();
     reusable = false;
+    perUseFaults = false;
     directRegions.clear();
-    if (NeedsCompletion() || HoldsLease()) return;
+    // A draw whose only completion work is its image table stages' fault checks (entries that
+    // fault, guarded SRT reads) is kept for later draws that each check a fault buffer of their own
+    // (PerUseFaults).
+    const bool faultsOnly = drawBuild && bda != nullptr && !usesBda && !untabledFaults && faultChecks && !buildFaults && !guestMemory.HasCopiedWrites();
+    if ((NeedsCompletion() && !faultsOnly) || HoldsLease()) return;
     if (std::any_of(textures.begin(), textures.end(), [](const std::shared_ptr<Texture>& texture) { return texture != nullptr && texture->RefreshedPerUse(); })) return;
     if (TemplateDataRefresh() && std::any_of(allocations.begin(), allocations.end(), [](const Allocation& allocation) { return allocation.buffer != nullptr && !allocation.guest && allocation.role != ShaderRecompiler::DescriptorRole::ImageTableMap && allocation.size > MaxRefreshBytes; })) return;
     const auto regions = guestMemory.DirectRegions();
@@ -1811,12 +1816,19 @@ void ShaderResources::noteReusable() {
         if (serial == 0) return;
         directRegions.push_back({begin, end, serial});
     }
-    reusable = true;
+    if (faultsOnly) perUseFaults = true;
+    else reusable = true;
 }
 
 bool ShaderResources::NeverReusable(std::span<const CompiledShader> shaders) {
+    // APS5_NO_TABLE_FAULT_CACHE=1: every fault-buffer stage keeps its draws out of the cache, as
+    // before per-use fault buffers.
+    static const bool tableFaultCache = std::getenv("APS5_NO_TABLE_FAULT_CACHE") == nullptr;
     return std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) {
-        return shader.program != nullptr && std::any_of(shader.program->bindings.begin(), shader.program->bindings.end(), [](const ShaderRecompiler::DescriptorBinding& binding) { return binding.role == ShaderRecompiler::DescriptorRole::BdaPagetable || binding.role == ShaderRecompiler::DescriptorRole::FaultBuffer; });
+        if (shader.program == nullptr) return false;
+        const auto& bindings = shader.program->bindings;
+        const auto has = [&](ShaderRecompiler::DescriptorRole role) { return std::any_of(bindings.begin(), bindings.end(), [&](const ShaderRecompiler::DescriptorBinding& binding) { return binding.role == role; }); };
+        return has(ShaderRecompiler::DescriptorRole::BdaPagetable) || (has(ShaderRecompiler::DescriptorRole::FaultBuffer) && (!tableFaultCache || !has(ShaderRecompiler::DescriptorRole::ImageTableMap)));
     });
 }
 
@@ -2383,7 +2395,7 @@ const ShaderRecompiler::DescriptorBinding* ShaderResources::tableImages(std::spa
 
 bool ShaderResources::Revalidate(std::span<const CompiledShader> shaders, ProofReport* report) {
     if (report != nullptr) *report = {ProofPath::Full, ProofFailure::Other};
-    if (!reusable || shaders.empty()) return false;
+    if (!(reusable || perUseFaults) || shaders.empty()) return false;
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     // APS5_NO_FAST_REVALIDATE=1 always repeats the lookups.
     static const bool noFast = std::getenv("APS5_NO_FAST_REVALIDATE") != nullptr;
@@ -3515,6 +3527,7 @@ std::uint32_t ShaderResources::rejectTableElement(TableStage& table, std::span<c
     table.poison.push_back(poison);
     table.messages.push_back(message);
     faultChecks = true;
+    buildFaults = true;
     return ShaderRecompiler::ImageTableAbi::PoisonCode(static_cast<std::uint32_t>(table.poison.size() - 1u));
 }
 
@@ -3710,6 +3723,7 @@ void ShaderResources::finishImageTables() {
             table.messages.push_back("the table at 0x" + HexText(base) + " is written by its own dispatch");
             map[header + Abi::TableFault] = Abi::PoisonCode(static_cast<std::uint32_t>(table.poison.size() - 1u));
             faultChecks = true;
+            buildFaults = true;
         }
         map[Abi::HeaderPoisonCount] = static_cast<std::uint32_t>(table.poison.size());
         auto& allocation = allocations.at(table.mapAllocation);
@@ -3804,6 +3818,11 @@ ShaderResources::DrawBindings::~DrawBindings() {
     if (cache != nullptr && allocation.set != VK_NULL_HANDLE) cache->Free(allocation);
 }
 
+void ShaderResources::DrawBindings::CheckFault() const {
+    Require(fault != nullptr, "draw bindings without a fault buffer of their own");
+    BdaResources::CheckUseFault(*fault, faultTables, faultRanges);
+}
+
 std::optional<std::vector<ShaderResources::MovedBuffer>> ShaderResources::MovedReadOnlyBuffers(std::span<const CompiledShader> shaders, Recorder& recorder) const {
     std::vector<MovedBuffer> moved;
     if (_set == VK_NULL_HANDLE || usesBda) return moved;
@@ -3852,13 +3871,36 @@ std::optional<std::vector<ShaderResources::MovedBuffer>> ShaderResources::MovedR
     return moved;
 }
 
-std::shared_ptr<ShaderResources::DrawBindings> ShaderResources::PrepareDrawBindings(Recorder& recorder, std::span<const MovedBuffer> moved) const {
+std::shared_ptr<ShaderResources::DrawBindings> ShaderResources::PrepareDrawBindings(Recorder& recorder, std::span<const MovedBuffer> moved, std::span<const CompiledShader> faultStages) const {
+    const bool ownFault = !faultStages.empty();
+    Require(!ownFault || (bda != nullptr && !usesBda && _set != VK_NULL_HANDLE), "a fault buffer of the draw's own needs an object with a fault buffer and no BDA table");
     if (_set == VK_NULL_HANDLE || usesBda) return {};
     const auto reads = guestMemory.InPlaceReads();
     auto result = std::make_shared<DrawBindings>();
+    if (ownFault) {
+        // One buffer for every stage's fault binding, as the object's own BdaResources serves them
+        // all; pooled (BufferPool) and zeroed, the Empty record the shaders publish into.
+        result->fault = std::make_shared<Buffer>(context, ShaderRecompiler::BdaAbi::FaultBufferBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        std::memset(result->fault->Bytes().data(), 0, result->fault->Bytes().size());
+        // The diagnostics finishImageTables hands the object's own BdaResources, from this use's
+        // stages: the content key holds their table maps, so the poison codes the map can select
+        // index these lists (no build rejection is ever cached, see noteReusable).
+        for (const auto& shader : faultStages) {
+            if (shader.program == nullptr) continue;
+            const auto& programBindings = shader.program->bindings;
+            if (std::none_of(programBindings.begin(), programBindings.end(), [](const ShaderRecompiler::DescriptorBinding& binding) { return binding.role == ShaderRecompiler::DescriptorRole::ImageTableMap; })) continue;
+            result->faultTables.push_back({IrStage(shader.stage), shader.program->imageTableShader, shader.program->imageTablePoison, std::vector<std::string>(shader.program->imageTablePoison.size())});
+            result->faultRanges.insert(result->faultRanges.end(), shader.program->imageTableRanges.begin(), shader.program->imageTableRanges.end());
+        }
+    }
     std::vector<std::size_t> selected;
     for (std::size_t index = 0; index < allocations.size(); ++index) {
         const auto& item = allocations[index];
+        if (ownFault && item.role == ShaderRecompiler::DescriptorRole::FaultBuffer) {
+            selected.push_back(index);
+            result->snapshots.push_back({0, result->fault});
+            continue;
+        }
         const auto override = std::find_if(moved.begin(), moved.end(), [&](const MovedBuffer& entry) { return entry.allocation == index; });
         if (override != moved.end() && !override->words.empty()) {
             auto buffer = std::make_shared<Buffer>(context, override->size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
