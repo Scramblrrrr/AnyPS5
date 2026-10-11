@@ -3792,8 +3792,11 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
         requiredSubgroup.requiredSubgroupSize = std::min(shader.hostSubgroupSize, state->maxComputeSubgroupSize);
         if (state->computeWave32 && (shader.hostSubgroupSize == 32u || shader.hostSubgroupSize > state->maxComputeSubgroupSize)) pipelineInfo.stage.pNext = &requiredSubgroup;
         pipelineInfo.layout = objects->layout;
-        if (profile && shader.spirv.size() > 100000) std::fprintf(stderr, "[dispatch] creating a pipeline for %zu SPIR-V words (program 0x%llx)\n", shader.spirv.size(), static_cast<unsigned long long>(programAddress));
+        static const bool tracePipelines = std::getenv("APS5_TRACE_COMPUTE_PIPELINES") != nullptr;
+        if (tracePipelines || (profile && shader.spirv.size() > 100000)) std::fprintf(stderr, "[dispatch] creating a pipeline for %zu SPIR-V words (program 0x%llx, flags 0x%x)\n", shader.spirv.size(), static_cast<unsigned long long>(programAddress), static_cast<unsigned int>(pipelineInfo.flags));
+        const auto pipelineStarted = tracePipelines ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         check(state->DeviceFunction<PFN_vkCreateComputePipelines>("vkCreateComputePipelines")(state->device, context.pipelineCache, 1, &pipelineInfo, nullptr, &objects->pipeline), "vkCreateComputePipelines");
+        if (tracePipelines) std::fprintf(stderr, "[dispatch] pipeline ready for %zu SPIR-V words (program 0x%llx) in %.1f ms\n", shader.spirv.size(), static_cast<unsigned long long>(programAddress), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipelineStarted).count());
         objects->destroyModule(objects->device, objects->module, nullptr);
         objects->module = VK_NULL_HANDLE;
         Graphics::LogPipelineStatistics_nid_no_patch(context, objects->pipeline);
