@@ -3851,7 +3851,7 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
                 }
                 remaining = state->computePipelines.size();
             }
-            if (!retired.empty()) AgcDriver::ProfilePrint_nid_no_patch("[compute-cache] retired %zu idle pipelines, %zu remain (local limit %zu, active owners retained)\n", retired.size(), remaining, localPipelineLimit);
+            if (!retired.empty()) std::fprintf(stderr, "[compute-cache] retired %zu idle pipelines, %zu remain (local limit %zu, active owners retained)\n", retired.size(), remaining, localPipelineLimit);
         }
         objects = std::make_shared<ComputePipelineObjects>();
         objects->device = state->device;
