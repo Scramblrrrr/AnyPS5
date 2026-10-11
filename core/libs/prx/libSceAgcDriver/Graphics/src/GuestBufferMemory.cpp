@@ -968,8 +968,6 @@ void syncRange(std::uint64_t address, std::uint64_t bytes) {
 }
 
 void prepareRange(std::uint64_t address, std::uint64_t bytes) {
-    // The compare reads the pages directly; a mirror is only reused while its Range exists, but a
-    // lease of a build in flight can keep a replaced Range alive past a protection change.
     Require(GuestMemory::Accessible(reinterpret_cast<const void*>(address), static_cast<std::size_t>(bytes)), "image mirror range became inaccessible");
     syncRange(address, bytes);
 }
