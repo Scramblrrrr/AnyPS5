@@ -3243,7 +3243,7 @@ VkDevice VulkanDevice::Device() const {
 
 bool VulkanDevice::DispatchRecipes() {
     static const bool noDispatchRecipe = std::getenv("APS5_NO_DISPATCH_RECIPE") != nullptr;
-    return !noDispatchRecipe;
+    return !noDispatchRecipe && std::getenv("APS5_LOCAL_COMPUTE_PIPELINES") == nullptr;
 }
 
 bool VulkanDevice::VerifyRecipes() {
@@ -3835,6 +3835,24 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
     timing.Mark("shader_resources");
     timer.phase(PhaseResources);
     if (objects == nullptr) {
+        static const std::size_t localPipelineLimit = [] {
+            const auto* value = std::getenv("APS5_LOCAL_COMPUTE_PIPELINES");
+            return value != nullptr ? static_cast<std::size_t>(std::strtoull(value, nullptr, 10)) : 0;
+        }();
+        if (localPipelineLimit != 0) {
+            std::vector<std::shared_ptr<ComputePipelineObjects>> retired;
+            std::size_t remaining = 0;
+            {
+                std::lock_guard pipelines(state->computePipelinesMutex);
+                for (auto it = state->computePipelines.begin(); it != state->computePipelines.end() && state->computePipelines.size() >= localPipelineLimit;) {
+                    if (it->second.use_count() != 1) { ++it; continue; }
+                    retired.push_back(std::move(it->second));
+                    it = state->computePipelines.erase(it);
+                }
+                remaining = state->computePipelines.size();
+            }
+            if (!retired.empty()) AgcDriver::ProfilePrint_nid_no_patch("[compute-cache] retired %zu idle pipelines, %zu remain (local limit %zu, active owners retained)\n", retired.size(), remaining, localPipelineLimit);
+        }
         objects = std::make_shared<ComputePipelineObjects>();
         objects->device = state->device;
         objects->destroyModule = state->DeviceFunction<PFN_vkDestroyShaderModule>("vkDestroyShaderModule");
