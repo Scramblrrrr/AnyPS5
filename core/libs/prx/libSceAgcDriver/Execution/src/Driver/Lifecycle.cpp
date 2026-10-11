@@ -7,6 +7,8 @@
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
 #include <cstdio>
+#include <exception>
+#include <thread>
 
 namespace AgcDriver::DriverDetail {
 
@@ -63,14 +65,29 @@ Driver::Driver() {
         throw;
     }
     GuestAllocations::GuestAllocationsSetGpuMapObserver_nid_postfix([](const GuestAllocations::Mapped& ranges, std::uint64_t generation) {
-        try {
-            const auto current = Driver::Get().device.Load();
-            if (current == nullptr || current->ImportGuestMemory(ranges, generation, false)) return;
-            std::lock_guard lock(GuestMemory::GpuMutex());
-            if (Driver::Get().device.Load() == current) current->ImportGuestMemory(ranges, generation, true);
-        } catch (const std::exception& error) {
-            std::fprintf(stderr, "[gpu] import of GPU memory at its mapping failed: %s\n", error.what());
+        const auto import = [&] {
+            try {
+                const auto current = Driver::Get().device.Load();
+                if (current == nullptr || current->ImportGuestMemory(ranges, generation, false)) return;
+                std::lock_guard lock(GuestMemory::GpuMutex());
+                if (Driver::Get().device.Load() == current) current->ImportGuestMemory(ranges, generation, true);
+            } catch (const std::exception& error) {
+                std::fprintf(stderr, "[gpu] import of GPU memory at its mapping failed: %s\n", error.what());
+            }
+        };
+        if (GuestMemory::GpuMutex().HeldByThisThread()) {
+            import();
+            return;
         }
+        std::exception_ptr failure;
+        std::thread([&] {
+            try {
+                import();
+            } catch (...) {
+                failure = std::current_exception();
+            }
+        }).join();
+        if (failure) std::rethrow_exception(failure);
     });
 }
 
