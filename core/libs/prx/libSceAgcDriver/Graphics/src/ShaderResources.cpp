@@ -382,7 +382,7 @@ void logLookup(const LookupRecord& record) {
     log.push_back(record);
 }
 
-std::shared_ptr<StorageTexture> cachedStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource, std::uint32_t mip, std::uint64_t guestBytes = 0);
+std::shared_ptr<StorageTexture> cachedStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource, std::uint32_t mip, std::uint64_t guestBytes = 0, bool written = false);
 
 std::uint64_t heldBytes(const StorageTexture& image) {
     return std::max<std::uint64_t>(image.AllocationBytes(), image.GuestBytes());
@@ -836,10 +836,12 @@ GuestTextureResource StorageSurface(const Context& context, const GuestTextureRe
 // `guestBytes` is the surface size when the caller described the surface already (0: described here).
 std::shared_ptr<StorageTexture> lookupStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes);
 
-std::shared_ptr<StorageTexture> cachedStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes) {
+std::shared_ptr<StorageTexture> cachedStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes, bool written) {
     Require(!DepthStencilPlaneAt(viewed.baseAddress), "storage access to a depth surface's stencil plane is not implemented");
     auto texture = lookupStorageTexture(context, words, viewed, mip, guestBytes);
-    if (DepthSurfaceAt(viewed.baseAddress)) SeedStorageFromDepth(context, texture);
+    if (!DepthSurfaceAt(viewed.baseAddress)) return texture;
+    if (written && RetireDepthSurfacesForStorage(context.device, texture->Descriptor(), texture->StorageFormat(), texture->GuestBytes())) return texture;
+    SeedStorageFromDepth(context, texture);
     return texture;
 }
 
@@ -2479,7 +2481,11 @@ bool ShaderResources::Revalidate(std::span<const CompiledShader> shaders, ProofR
                         if (storageIndex >= storageTextures.size()) return false;
                         std::shared_ptr<StorageTexture> expected;
                         if (SameAsPreviousStorageElement(binding, element) && StorageDedupeEnabled()) expected = storageTextures[storageIndex - 1];
-                        else expected = cachedStorageTexture(context, words, DecodeTextureResource(words), storageMips[storageIndex]);
+                        else {
+                            const auto resource = DecodeTextureResource(words);
+                            if (storageWritten[storageIndex] && !DepthSurfaceAt(resource.baseAddress)) RetireDepthSurfaces(context.device, resource.baseAddress, storageTextures[storageIndex]->GuestBytes());
+                            expected = cachedStorageTexture(context, words, resource, storageMips[storageIndex], 0, storageWritten[storageIndex]);
+                        }
                         if (expected != storageTextures[storageIndex]) return false;
                         ++storageIndex;
                     }
@@ -3527,14 +3533,16 @@ void ShaderResources::resolveImageBinding(const ShaderRecompiler::DescriptorBind
         const auto mip = std::min(resource.baseLevel + mipOffset, resource.mipCount - 1u);
         Require(resource.minLod <= mip * 256u, "guest storage texture descriptor clamps its minimum LOD above the level it addresses, which is not implemented");
         const auto guestBytes = record != nullptr && record->decoded ? record->guestBytes : DescribeSurface(resource).guestBytes;
+        const bool written = element >= binding.imageWritten.size() || binding.imageWritten[element];
+        if (written && !DepthSurfaceAt(resource.baseAddress)) RetireDepthSurfaces(context.device, resource.baseAddress, guestBytes);
         // The same surface as the previous element: its image was just looked up and refreshed.
         if (sameAsPrevious && StorageDedupeEnabled()) storageTextures.push_back(storageTextures.back());
-        else storageTextures.push_back(cachedStorageTexture(context, words, resource, mip, guestBytes));
+        else storageTextures.push_back(cachedStorageTexture(context, words, resource, mip, guestBytes, written));
         storageMips.push_back(mip);
         storageKeys.push_back(resource.dccAddress);
         storageFirstLayer.push_back(firstLayer);
         // Images the shader only reads have nothing to store back.
-        storageWritten.push_back(element >= binding.imageWritten.size() || binding.imageWritten[element]);
+        storageWritten.push_back(written);
         storageAtomic.push_back(element < binding.imageAtomic.size() && binding.imageAtomic[element]);
         storageAtomic64.push_back(element < binding.imageAtomic64.size() && binding.imageAtomic64[element]);
         describedRanges.push_back({"storage", resource.baseAddress, guestBytes, resource.width, resource.height, resource.format, static_cast<int>(resource.tileMode), resource.dccAddress});
