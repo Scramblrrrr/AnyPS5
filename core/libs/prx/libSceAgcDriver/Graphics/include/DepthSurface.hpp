@@ -33,6 +33,8 @@ std::shared_ptr<Texture> DepthSurfaceTexture(const Context& context, std::span<c
 void SeedStorageFromDepth(const Context& context, const std::shared_ptr<StorageTexture>& storage);
 std::shared_ptr<StorageTexture> DepthSurfaceStorage(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource, std::uint32_t mip);
 bool DepthSurfaceStoreBack(const Context& context, const StorageTexture& storage);
+VkFormat HostDepthFormat(const Context& context, VkFormat format);
+float HostDepthBiasConstant(const Context& context, VkFormat format, float constant);
 
 }
 
