@@ -719,10 +719,11 @@ ComputePipelineReplayResult VulkanDevice::ReplayComputePipeline(const ComputePip
     }
     const auto target = Target();
     require(capture.spirv[1] <= target.spirvVersion, "captured SPIR-V version exceeds enabled device support");
+    const std::array coreCapabilities{spv::CapabilityMatrix, spv::CapabilityShader, spv::CapabilityInputAttachment, spv::CapabilitySampled1D, spv::CapabilityImage1D, spv::CapabilitySampledBuffer, spv::CapabilityImageBuffer, spv::CapabilityImageQuery, spv::CapabilityDerivativeControl};
     for (std::size_t cursor = 5; cursor < capture.spirv.size(); cursor += capture.spirv[cursor] >> 16u) {
         const auto count = capture.spirv[cursor] >> 16u;
         if ((capture.spirv[cursor] & 0xffffu) == spv::OpCapability) {
-            require(count == 2 && std::ranges::find(target.supportedCapabilities, capture.spirv[cursor + 1]) != target.supportedCapabilities.end(), "captured SPIR-V capability is not enabled");
+            require(count == 2 && (std::ranges::find(coreCapabilities, capture.spirv[cursor + 1]) != coreCapabilities.end() || std::ranges::find(target.supportedCapabilities, capture.spirv[cursor + 1]) != target.supportedCapabilities.end()), ("captured SPIR-V capability is not enabled: " + std::to_string(capture.spirv[cursor + 1])).c_str());
         }
     }
 #if ANYPS5_ENABLE_SPIRV_TOOLS

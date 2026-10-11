@@ -46,6 +46,18 @@ int main() {
         Require(imported.initialCacheBytes == fresh.cache.size(), "replay did not import the supplied cache");
         Require(fresh.deviceId == imported.deviceId && fresh.driverVersion == imported.driverVersion && fresh.pipelineCacheUuid == imported.pipelineCacheUuid, "replay device identity changed");
         Require(capture.Encode() == encoded, "replay modified the captured pipeline");
+        auto coreImage = decoded;
+        coreImage.spirv.insert(coreImage.spirv.begin() + 5, {0x00020011u, 43u});
+        CheckResult(device->ReplayComputePipeline(coreImage));
+        auto unsupported = decoded;
+        unsupported.spirv.insert(unsupported.spirv.begin() + 5, {0x00020011u, 6u});
+        bool capabilityRejected = false;
+        try {
+            device->ReplayComputePipeline(unsupported);
+        } catch (const std::exception& error) {
+            capabilityRejected = std::string_view(error.what()).find("captured SPIR-V capability is not enabled: 6") != std::string_view::npos;
+        }
+        Require(capabilityRejected, "unsupported Kernel capability was accepted");
         auto corrupt = fresh.cache;
         corrupt[8] ^= std::byte{0xff};
         bool rejected = false;
