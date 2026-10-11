@@ -858,8 +858,12 @@ void DepthStencilTests() {
         Require(HtileFillClears(0xfffff0ffu, true) == VK_IMAGE_ASPECT_STENCIL_BIT, "ZMask 0xf with SMem 0 clears only the stencil");
         Require(HtileFillClears(0xffffffffu, true) == 0 && HtileFillClears(0xffffffffu, false) == 0, "an expanded fill clears nothing");
         const VkExtent2D extent{16, 8};
-        Require(HtileFillCovers(0x1000, extent, 0x1000, 8) && HtileFillCovers(0x1000, extent, 0xff0, 0x20), "a fill over every HTILE word covers the surface");
-        Require(!HtileFillCovers(0x1000, extent, 0x1000, 4) && !HtileFillCovers(0x1000, extent, 0x1004, 8) && !HtileFillCovers(0, extent, 0, 64), "a partial fill, one starting past the HTILE base, or no HTILE covers nothing");
+        Require(HtileFillCovers(0x10000, extent, 0x10000, 0x8000) && HtileFillCovers(0x10000, extent, 0xfff0, 0x8010), "a fill over the whole 32 KiB metadata block covers the surface");
+        Require(!HtileFillCovers(0x10000, extent, 0x10000, 0x7ffc) && !HtileFillCovers(0x10000, extent, 0x10004, 0x8000) && !HtileFillCovers(0, extent, 0, 0x10000), "a partial fill, one starting past the HTILE base, or no HTILE covers nothing");
+        // Pipe-aligned SW_64KB_Z_X places a 16x16 surface's HTILE words across its metadata block (a valid word at offset
+        // 260, AMD PAL), so a fill of the words a linear layout would hold covers nothing.
+        Require(!HtileFillCovers(0x10000, {16, 16}, 0x10000, 16) && !HtileFillCovers(0x10000, {16, 16}, 0x10000, 264), "a fill of the linear HTILE size of a 16x16 surface misses its pipe-aligned words");
+        Require(AgcDriver::Graphics::HtileMetadataBytes({1024, 512}) == 0x8000u && AgcDriver::Graphics::HtileMetadataBytes({1025, 512}) == 0x10000u && AgcDriver::Graphics::HtileMetadataBytes({3840, 2160}) == 20u * 0x8000u, "the HTILE metadata is 32 KiB per 1024x512 block");
     }
     Require(state.renderExtent.width == 4 && state.renderExtent.height == 2, "render extent ignores the depth surface");
     Require(!state.depthTest && !state.depthWrite && state.stencilTest, "depth/stencil enables changed");

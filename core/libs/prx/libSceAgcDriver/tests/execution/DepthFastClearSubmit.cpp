@@ -88,7 +88,7 @@ void DmaFill(const GuestBlock& htile, std::uint32_t bytes, std::uint32_t pattern
 
 constexpr std::array<std::uint32_t, 9> FillKernel{0xd7460004u, 0x04010c08u, 0x7e000204u, 0x7e020205u, 0x7e040206u, 0x7e060207u, 0xe01c2000u, 0x80000004u, 0xbf810000u};
 
-void DispatchFill(const GuestBlock& code, const GuestBlock& htile, std::uint32_t records) {
+void DispatchFill(const GuestBlock& code, const GuestBlock& htile, std::uint32_t bytes) {
     const auto kernel = code.Address();
     const auto base = htile.Address();
     Submit({
@@ -97,16 +97,16 @@ void DispatchFill(const GuestBlock& code, const GuestBlock& htile, std::uint32_t
         Pm4Packet(0x76, {0x207, 64}),
         Pm4Packet(0x76, {0x208, 1}),
         Pm4Packet(0x76, {0x209, 1}),
-        Pm4Packet(0x76, {0x213, 8u << 1u}),
+        Pm4Packet(0x76, {0x213, (8u << 1u) | 0x80u}),
         Pm4Packet(0x76, {0x240, Low(base)}),
         Pm4Packet(0x76, {0x241, (High(base) & 0xffffu) | (16u << 16u)}),
-        Pm4Packet(0x76, {0x242, records}),
+        Pm4Packet(0x76, {0x242, bytes / 16u}),
         Pm4Packet(0x76, {0x243, 0x4bfacu}),
         Pm4Packet(0x76, {0x244, 0}),
         Pm4Packet(0x76, {0x245, 0}),
         Pm4Packet(0x76, {0x246, 0}),
         Pm4Packet(0x76, {0x247, 0}),
-        Pm4Packet(0x15, {1, 1, 1, 0x41}),
+        Pm4Packet(0x15, {bytes / 1024u, 1, 1, 0x41}),
     });
 }
 
@@ -139,7 +139,7 @@ void DispatchFillClearsDepth(AgcDriver::VulkanDevice& device, const Shaders& sha
     const Surface surface{NewBlock().Address(), 0, htile.Address(), false, VK_FORMAT_D32_SFLOAT};
     Require(Draw(device, shaders, surface, {.depthWrite = true}) == Covered, "a new depth surface was not cleared to DB_DEPTH_CLEAR (1.0)");
     Require(Draw(device, shaders, surface, {}) == 0u, "a draw at depth 0.5 passed LESS against the 0.5 written before it");
-    DispatchFill(code, htile, HtileFillBytes / 16u);
+    DispatchFill(code, htile, HtileFillBytes);
     Require(Draw(device, shaders, surface, {.depthWrite = true}) == Covered, "a compute fill of 0 over the HTILE did not clear the depth to DB_DEPTH_CLEAR (1.0)");
     Require(Draw(device, shaders, surface, {}) == 0u, "the depth written after the compute fill clear was lost");
 }
