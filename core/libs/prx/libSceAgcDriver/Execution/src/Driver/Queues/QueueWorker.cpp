@@ -104,6 +104,10 @@ void Driver::run(std::uint32_t id) noexcept {
 
                 while (!ready()) {
                     if (!completionsPending() || (id != 0 && Graphics::Recorder::PendingCompletionLabels() == 0)) {
+                        lock.unlock();
+                        if (const auto localDevice = device.Load()) localDevice->StoreIdleResults(id == 0);
+                        lock.lock();
+                        if (ready()) break;
                         if (id == 0) queue0Dormant.store(true, std::memory_order_relaxed);
                         changed.wait(lock, ready);
                         if (id == 0) queue0Dormant.store(false, std::memory_order_relaxed);

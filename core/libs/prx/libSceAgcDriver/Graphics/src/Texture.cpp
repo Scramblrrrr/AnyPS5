@@ -2970,6 +2970,12 @@ void StorageTexture::FlushAllPending(const char* reason) {
     static_cast<void>(FlushPending(0, std::numeric_limits<std::size_t>::max(), nullptr, reason));
 }
 
+bool StorageTexture::AnyPending() {
+    auto& pending = Pending();
+    std::lock_guard lock(pending.mutex);
+    return pending.textures.begin() != pending.textures.end();
+}
+
 bool StorageTexture::StoreAtFlipRequested(const char* value) {
     if (value == nullptr) return false;
     if (std::strcmp(value, "1") == 0) return true;
