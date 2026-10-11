@@ -2201,7 +2201,7 @@ void storageRefreshTests(const Device& device, Recorder& recorder, bool watched)
     DccKeyProof proof;
     Require(ProvedClearKeys(resource, surfaceBytes, proof) == DccKeys::Clear0000, "0x00 keys are not a 0000 clear");
     {
-        auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+        auto image = StorageTexture::Create(context, detiler, resource, 0);
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         const auto draw = [&](VkClearColorValue value) {
             const auto commands = recorder.Commands();
@@ -2555,7 +2555,7 @@ void staleGenerationTests(const Device& device, Recorder& recorder) {
     resource.dccAddress = address + surfaceBytes;
     {
         Require(AgcDriver::GuestMemory::Watched(address, bytes), "(s) the block is not watched before the storage image takes its generation");
-        auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+        auto image = StorageTexture::Create(context, detiler, resource, 0);
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         const auto commands = recorder.Commands();
         recorder.Keep(image);
@@ -2697,7 +2697,7 @@ void writeBackPaddingTests(const Device& device, Recorder& recorder, bool watche
         context.detiler = &detiler;
         resource.baseAddress = address;
         {
-            auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+            auto image = StorageTexture::Create(context, detiler, resource, 0);
             const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, test.mipCount, 0, 1};
             const auto commands = recorder.Commands();
             recorder.Keep(image);
@@ -2874,7 +2874,7 @@ void singlePassTests(const Device& device, Recorder& recorder, bool watched) {
             for (auto& value : texels) value = random();
             const auto movesBefore = StorageTexture::SinglePassMoves();
             {
-                auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+                auto image = StorageTexture::Create(context, detiler, resource, 0);
                 recorder.Keep(image);
                 results[mode].uploaded = readImage(*image);
                 Buffer staging(context, linearBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
@@ -2898,7 +2898,7 @@ void singlePassTests(const Device& device, Recorder& recorder, bool watched) {
                 recorder.Submit();
                 device.WaitQueue();
                 recorder.Sync();
-                auto again = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+                auto again = StorageTexture::Create(context, detiler, resource, 0);
                 recorder.Keep(again);
                 results[mode].reuploaded = readImage(*again);
                 std::vector<std::byte> read(bytes);
@@ -3041,7 +3041,7 @@ void storageUploadLifetimeTests(const Device& device, Recorder& previous, bool f
         Recorder recorder(context);
         recorder.Activate();
         try {
-            auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+            auto image = StorageTexture::Create(context, detiler, resource, 0);
             lifetime = image;
             image.reset();
             retained = !lifetime.expired();
@@ -3126,7 +3126,7 @@ void refreshProofTests(const Device& device, Recorder& recorder) {
     resource.dccAddress = address + surfaceBytes;
     const auto proved = [] { return StorageTexture::RefreshesProved(); };
     {
-        auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+        auto image = StorageTexture::Create(context, detiler, resource, 0);
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         const auto draw = [&](VkClearColorValue value) {
             const auto commands = recorder.Commands();
@@ -3171,7 +3171,7 @@ void refreshProofTests(const Device& device, Recorder& recorder) {
         expectProved("the proof was not taken again after a key store");
         auto other = resource;
         other.dccAddress = 0;
-        auto pending = std::make_shared<StorageTexture>(context, detiler, other, 0);
+        auto pending = StorageTexture::Create(context, detiler, other, 0);
         recorder.Keep(pending);
         pending->MarkDirty();
         expectFull("another image's pending results over the surface were answered from the proof");
@@ -3180,7 +3180,7 @@ void refreshProofTests(const Device& device, Recorder& recorder) {
         pending->MarkDirty();
         expectFull("another image's pending results were answered from the proof");
         Require(!AgcDriver::Graphics::PendingStorageOverlaps(address, surfaceBytes, image.get()), "the full refresh left another image's results pending");
-        auto fresh = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+        auto fresh = StorageTexture::Create(context, detiler, resource, 0);
         const auto before = proved();
         fresh->Refresh();
         Require(proved() == before, "a new image of the surface was answered from another image's proof");
@@ -3266,7 +3266,7 @@ void unchangedCpuStampTests(const Device& device, Recorder& recorder) {
             resource.dstSelW = 7;
             Require(DescribeSurface(resource).guestBytes == surfaceBytes, "(c) unexpected surface size");
             {
-                auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+                auto image = StorageTexture::Create(context, detiler, resource, 0);
                 const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
                 const auto commands = recorder.Commands();
                 recorder.Keep(image);
@@ -3379,7 +3379,7 @@ void settledBaselineTests(const Device& device, Recorder& recorder) {
         if (pending) recorder.NotePendingWrite(address + 4096, 4096);
         const auto before = recorder.Submissions();
         {
-            auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+            auto image = StorageTexture::Create(context, detiler, resource, 0);
             recorder.Keep(image);
             if (pending) Require(recorder.Submissions() == before, "(b) an upload over a pending recorded store submitted the open batch to read its generation baseline");
         }
@@ -3469,7 +3469,7 @@ void importWindowTests(const Device& device, Recorder& recorder) {
         Require(!HostImportCovers(base, address, bytes), "(w) the block is imported before the cache takes its generation");
         const auto cached = CollectWritesUncached(address, surfaceBytes);
         Require(cached != 0 && UnchangedSince(address, surfaceBytes, cached), "(w) the cache's generation is not current before the import");
-        auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+        auto image = StorageTexture::Create(context, detiler, resource, 0);
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         const auto commands = recorder.Commands();
         recorder.Keep(image);
@@ -4579,7 +4579,7 @@ void singleCubeTests(const Device& device, Recorder& recorder) {
         resource.baseAddress = reinterpret_cast<std::uint64_t>(surface);
         const std::span<const std::byte> snapshot(surface, static_cast<std::size_t>(geometry.guestBytes));
         Texture texture(context, detiler, resource, identity, snapshot);
-        auto storage = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+        auto storage = StorageTexture::Create(context, detiler, resource, 0);
         recorder.Keep(storage);
         Texture storageView(context, storage, resource, identity);
         for (std::uint32_t face = 0; face < 6; ++face) {
@@ -4613,7 +4613,7 @@ void firstLayerViewTests(const Device& device, Recorder& recorder) {
     auto* surface = reinterpret_cast<std::uint8_t*>((reinterpret_cast<std::uintptr_t>(memory.data()) + 255) & ~std::uintptr_t{255});
     for (std::uint32_t layer = 0; layer < 3; ++layer) std::memset(surface + geometry.GuestLayerOffset(layer), 0x20 * (layer + 1), static_cast<std::size_t>(geometry.layerBytes));
     resource.baseAddress = reinterpret_cast<std::uint64_t>(surface);
-    auto image = std::make_shared<StorageTexture>(withDetiler, detiler, resource, 0);
+    auto image = StorageTexture::Create(withDetiler, detiler, resource, 0);
     recorder.Keep(image);
     SampleProgram program(context, recorder);
     expectRed(program.Red(image->FirstLayerView(0), VK_IMAGE_LAYOUT_GENERAL, 0.0f), 0x40 / 255.0f, "a first-layer view does not read the BASE_ARRAY layer");
@@ -4654,7 +4654,7 @@ void atomicViewTests(const Device& device, Recorder& recorder) {
         const auto geometry = DescribeSurface(resource);
         std::vector<std::uint8_t> memory(static_cast<std::size_t>(geometry.guestBytes) + 256);
         resource.baseAddress = (reinterpret_cast<std::uintptr_t>(memory.data()) + 255) & ~std::uintptr_t{255};
-        auto image = std::make_shared<StorageTexture>(withDetiler, detiler, resource, 0);
+        auto image = StorageTexture::Create(withDetiler, detiler, resource, 0);
         recorder.Keep(image);
         if (format == 56u) {
             bool refused = false;
@@ -4824,7 +4824,7 @@ void keysFillTests(const Device& device, Recorder& recorder) {
     resource.dccAddress = keysAddress;
     Require(DescribeSurface(resource).guestBytes == surfaceBytes, "the key fill surface has an unexpected size");
     {
-        auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+        auto image = StorageTexture::Create(context, detiler, resource, 0);
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         const auto draw = [&](VkClearColorValue value) {
             const auto commands = recorder.Commands();
@@ -4937,7 +4937,7 @@ void denormalClearTests(const Device& device, Recorder& recorder) {
     Require(ClearKeepsDenormals(context, VK_FORMAT_R16G16_SFLOAT) == keeps, "the denormal clear probe changed its answer");
     Require(!ClearKeepsDenormals(context, VK_FORMAT_R32G32B32A32_SFLOAT), "a format without small floats probed as keeping denormals");
     {
-        auto image = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+        auto image = StorageTexture::Create(context, detiler, resource, 0);
         const auto holds = [&](std::uint32_t texel) {
             Buffer readback(context, side * side * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
             const auto commands = recorder.Commands();
