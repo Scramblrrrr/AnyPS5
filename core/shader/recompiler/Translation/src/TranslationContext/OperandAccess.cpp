@@ -156,7 +156,7 @@ IrU32 TranslationContext::flushF32Denormal(IrU32 bits) {
 }
 
 IrF32 TranslationContext::flushTinyProduct(IrValue* lhs, IrValue* rhs, IrValue* product, IrValue* addend, bool afterRounding) {
-    if ((f32DenormalFlush & 2u) == 0u || keepsProductOutOfTinyRange(*lhs) || keepsProductOutOfTinyRange(*rhs)) return IrF32(*product);
+    if ((f32DenormalFlush & 6u) == 0u || keepsProductOutOfTinyRange(*lhs) || keepsProductOutOfTinyRange(*rhs)) return IrF32(*product);
     IrValue& lhsBits = ir.BitCastU32(*lhs);
     IrValue& rhsBits = ir.BitCastU32(*rhs);
     const std::uint32_t roundMode = floatMode.has_value() ? floatMode->floatMode & 3u : 0u;
