@@ -7,6 +7,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Sampler.hpp"
 #include "Recompiler.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Shaders.hpp"
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <limits>
@@ -220,6 +221,13 @@ public:
     // checking it when its batch completed. Reusable() stays false, so dispatches and recipes,
     // which run the object's own completion or none, never take it.
     bool PerUseFaults() const { return perUseFaults; }
+    // Whether a reuse must copy some read-only guest buffers anew (MovedReadOnlyBuffers does): a
+    // recipe, which binds the object's own set, never takes such an object.
+    bool RefreshesReads() const { return !copiedRegions.empty(); }
+    // DIAG: why noteReusable did not keep the object (0 kept, 1 completion, 2 lease, 3 refreshed
+    // texture, 4 big data, 5 no direct regions, 6 no import serial, 7 build faults, 8 untabled
+    // faults, 9 copied writes).
+    int KeepRefusal() const { return keepRefusal; }
     // Draw stages whose objects the cache can never serve: an address-based stage (BDA table, lease)
     // or a fault buffer without image tables (rect-list validation, guarded SRT reads alone), whose
     // checks always run. An image table stage's fault buffer is no obstacle (see PerUseFaults).
@@ -488,6 +496,23 @@ private:
     // alone): its checks are never moved to the uses (see NeverReusable).
     bool untabledFaults = false;
     bool perUseFaults = false;
+    int keepRefusal = 0;
+    // Guest buffer allocations in copied, never-written regions (see noteReusable), and those
+    // regions: a later use binds the build's copy while the region is unchanged since it was taken
+    // (and no recorded work writes it), else copies its elements anew when they are all small enough
+    // (`copyable`), else misses.
+    std::vector<bool> refreshedReads;
+    struct CopiedRegion {
+        std::uint64_t begin;
+        std::uint64_t end;
+        std::uint64_t generation;
+        bool copyable;
+        // A sparse region: the committed parts the build copied (a use proves the same parts are
+        // committed and each is unchanged).
+        bool sparse = false;
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> backed {};
+    };
+    std::vector<CopiedRegion> copiedRegions;
     VkDescriptorSetLayout _layout = VK_NULL_HANDLE;
     // Whether the layout is this object's own (no cache) and destroyed with it.
     bool ownsLayout = false;
@@ -623,6 +648,10 @@ private:
 // The process-wide cache the device and the draw path share (keys name the device; a device clears
 // it when it goes). Never destroyed: entries belong to the device, not to static teardown.
 ResourceCache& SharedResourceCache();
+// DIAG: entries the evicted-storage purge dropped (draw or dispatch keys).
+std::uint64_t ResourceCachePurged(bool draw);
+void DiagNonDirectCount(int kind, bool written, std::uint64_t address, std::uint64_t bytes);
+std::string DiagNonDirectText();
 
 }
 
