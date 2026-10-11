@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <chrono>
 #include <algorithm>
+#include <numeric>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -3009,7 +3010,9 @@ bool GuestBufferMemory::stagingEligible(const Region& region, bool addressable) 
 void GuestBufferMemory::UploadPrepare(bool addressable) {
     Require(!prepared && !uploaded, "guest memory was already uploaded");
     prepared = true;
-    std::sort(regions.begin(), regions.end(), [](const Region& left, const Region& right) { return left.begin < right.begin; });
+    std::vector<std::uint32_t> order(regions.size());
+    std::iota(order.begin(), order.end(), 0u);
+    std::sort(order.begin(), order.end(), [&](std::uint32_t left, std::uint32_t right) { return regions[left].begin < regions[right].begin; });
     // Merged regions stay sparse when either part covered uncommitted pages.
     const auto mergeBacked = [](Region& into, const Region& from) {
         if (!into.sparse && !from.sparse) return;
@@ -3027,7 +3030,9 @@ void GuestBufferMemory::UploadPrepare(bool addressable) {
         if (!into.sparse) into.backed.clear();
     };
     std::vector<Region> merged;
-    for (auto& region : regions) {
+    merged.reserve(regions.size());
+    for (const auto index : order) {
+        auto& region = regions[index];
         if (!merged.empty() && region.begin < merged.back().end) {
             auto& previous = merged.back();
             if (previous.mirror != nullptr || region.mirror != nullptr) {
