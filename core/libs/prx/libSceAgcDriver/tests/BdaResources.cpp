@@ -604,6 +604,7 @@ void sparseHeapTests(const Context& context, const BdaTestAccess& access) {
         std::uint32_t adjustment = 0;
         const auto view = memory.Descriptor(base, reserved, adjustment);
         Require(adjustment == 0 && view.range == committed, "a sparse heap view is not cut at its last committed byte");
+        Require(memory.CopiedBytes() == committed, "a cut sparse heap is charged at its reserved size");
         const auto bytes = access.bytes(view.buffer);
         Require(bytes.size() < reserved && bytes[view.offset + committed - 1] == std::byte{0x5a}, "a sparse heap was not copied up to its last committed byte");
         bytes[view.offset + 8] = std::byte{0x77};
@@ -624,6 +625,7 @@ void sparseHeapTests(const Context& context, const BdaTestAccess& access) {
         Require(whole.buffer == view.buffer && bytes.size() >= whole.offset + late + 16, "a view in the uncommitted part of a sparse heap has another owner");
         Require(bytes[whole.offset + committed - 1] == std::byte{0x5a} && std::all_of(bytes.begin() + static_cast<std::ptrdiff_t>(whole.offset + committed), bytes.begin() + static_cast<std::ptrdiff_t>(whole.offset + late + 16), [](std::byte byte) { return byte == std::byte{}; }), "the uncommitted part of a cut sparse heap does not read as zeros");
         Require(whole.range == late + 256, "a sparse heap copy does not end past its last view's start");
+        Require(memory.CopiedBytes() == late + 256, "a cut sparse heap charge does not include its last view");
         const auto ranges = memory.AddressRanges();
         Require(ranges.size() == 1 && ranges[0].begin == base && ranges[0].end == base + late + 256, "the BDA range of a cut sparse heap is not clamped to its copy");
         memory.WriteBack();

@@ -245,7 +245,7 @@ public:
     bool HoldsLease() const { return !lease.empty() || space != nullptr; }
     std::size_t CopiedBytes() const {
         std::size_t bytes = 0;
-        for (const auto& region : regions) if (region.buffer != nullptr) bytes += static_cast<std::size_t>(region.end - region.begin);
+        for (const auto& region : regions) if (region.buffer != nullptr) bytes += static_cast<std::size_t>((region.bufferEnd != 0 ? region.bufferEnd : region.end) - region.begin);
         return bytes;
     }
     // Every uploaded region as [begin, end) when all of them are served by host imports, in place or
