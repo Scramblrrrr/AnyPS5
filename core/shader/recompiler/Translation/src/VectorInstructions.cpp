@@ -50,7 +50,7 @@ bool hostFlushesF32Denormals() {
 
 std::uint32_t TranslationContext::f32DenormalFlushFor(const RdnaInstruction& inst) const {
     std::uint32_t flush = 0u;
-    const bool host = hostFlushesF32Denormals();
+    const bool host = hostFlushesF32Denormals() && (!floatMode.has_value() || (floatMode->floatMode & 3u) == 0u);
     switch (inst.op) {
     case RdnaOpcode::VAddF32:
     case RdnaOpcode::VSubF32:
@@ -79,6 +79,10 @@ std::uint32_t TranslationContext::f32DenormalFlushFor(const RdnaInstruction& ins
     case RdnaOpcode::VFmaF32:
         flush = roundsProductSeparately(inst) ? 0u : host ? 4u : 3u;
         break;
+    case RdnaOpcode::VCvtI32F32:
+    case RdnaOpcode::VCvtU32F32:
+        flush = host ? 0u : 1u;
+        break;
     case RdnaOpcode::VCmpEqF32:
     case RdnaOpcode::VCmpGeF32:
     case RdnaOpcode::VCmpGtF32:
@@ -91,10 +95,6 @@ std::uint32_t TranslationContext::f32DenormalFlushFor(const RdnaInstruction& ins
     case RdnaOpcode::VCmpxLeF32:
     case RdnaOpcode::VCmpxLgF32:
     case RdnaOpcode::VCmpxLtF32:
-    case RdnaOpcode::VCvtI32F32:
-    case RdnaOpcode::VCvtU32F32:
-        flush = host ? 0u : 1u;
-        break;
     case RdnaOpcode::VCmpNeqF32:
     case RdnaOpcode::VCmpNgeF32:
     case RdnaOpcode::VCmpNgtF32:
