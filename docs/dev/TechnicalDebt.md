@@ -1,5 +1,7 @@
 # Project technical debt
 
+- [Reused depth storage](../../core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp): storage views incompatible with a cached depth plane use guest memory. The descriptor check does not prove allocation reuse or transfer the last depth writer into an incompatible view; compatible views retain the depth-transfer path.
+
 ### Build
 
 - Building on Windows requires a specific version of mingw - MinGW-w64 GCC 15.2.0 (`winlibs-gcc15`, `x86_64-ucrt-posix-seh`)

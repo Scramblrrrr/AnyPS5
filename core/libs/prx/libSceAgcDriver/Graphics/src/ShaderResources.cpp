@@ -807,7 +807,7 @@ GuestTextureResource StorageSurface(const Context& context, const GuestTextureRe
 std::shared_ptr<StorageTexture> lookupStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes);
 
 std::shared_ptr<StorageTexture> cachedStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes) {
-    const bool depthView = DepthSurfaceMatchesView(context, viewed);
+    const bool depthView = DepthSurfaceMatchesView(context, words, viewed);
     Require(!depthView || !DepthStencilPlaneAt(viewed.baseAddress), "storage access to a depth surface's stencil plane is not implemented");
     auto texture = lookupStorageTexture(context, words, viewed, mip, guestBytes);
     if (depthView) SeedStorageFromDepth(context, texture);
