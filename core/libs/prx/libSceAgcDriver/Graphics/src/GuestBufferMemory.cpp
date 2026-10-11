@@ -3033,35 +3033,12 @@ void GuestBufferMemory::copyRegion(Region& region, bool addressable) {
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     const auto bytes = region.end - region.begin;
     const auto usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | (addressable ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0u);
-    if (profile) {
-        // Why the region is copied rather than bound in place, totalled every 1000 uploads (under a
-        // mutex: prepare stages of several builds copy at once).
-        static std::mutex reasonsMutex;
-        static std::uint64_t uploads = 0, noImport = 0, noImportBytes = 0, misaligned = 0, misalignedBytes = 0, snapshotOnly = 0, snapshotBytes = 0;
-        static std::map<std::uint64_t, std::pair<std::uint64_t, std::uint64_t>> outside;
-        bool inImport = false;
-        if (context.hostImportAlignment != 0) {
-            auto& state = Imports();
-            std::lock_guard lock(state.mutex);
-            inImport = findImport(state, region.begin, region.end) != nullptr;
-        }
-        std::lock_guard lock(reasonsMutex);
-        if (!region.hostBacked && !region.writable) { ++snapshotOnly; snapshotBytes += bytes; }
-        else if (inImport) { ++misaligned; misalignedBytes += bytes; }
-        else {
-            ++noImport;
-            noImportBytes += bytes;
-            auto& bucket = outside[region.begin >> 28u];
-            ++bucket.first;
-            bucket.second += bytes;
-        }
-        if (++uploads % 1000 == 0) {
-            // 'misaligned in imports' are the ones the GPU did not copy: over APS5_GPU_COPY_MAX_KIB,
-            // sparse, APS5_CPU_COPIES, no recorder, or an import gone by UploadFinish.
-            AgcDriver::ProfilePrint_nid_no_patch("[buffers] %llu copied regions on the CPU: %llu snapshots (%.0f MiB), %llu misaligned in imports (%.0f MiB), %llu outside imports (%.0f MiB):", static_cast<unsigned long long>(uploads), static_cast<unsigned long long>(snapshotOnly), snapshotBytes / 1048576.0, static_cast<unsigned long long>(misaligned), misalignedBytes / 1048576.0, static_cast<unsigned long long>(noImport), noImportBytes / 1048576.0);
-            for (const auto& [granule, counts] : outside) AgcDriver::ProfilePrint_nid_no_patch(" 0x%llx0000000:%llu/%.0fMiB", static_cast<unsigned long long>(granule), static_cast<unsigned long long>(counts.first), counts.second / 1048576.0);
-            AgcDriver::ProfilePrint_nid_no_patch("\n");
-        }
+    std::uint64_t readBytes = 0;
+    bool inImport = false;
+    if (profile && context.hostImportAlignment != 0) {
+        auto& state = Imports();
+        std::lock_guard lock(state.mutex);
+        inImport = findImport(state, region.begin, region.end) != nullptr;
     }
     const auto allocateStart = std::chrono::steady_clock::now();
     if (region.sparse && region.buffer == nullptr && (region.hostBacked || region.writable)) {
@@ -3085,6 +3062,7 @@ void GuestBufferMemory::copyRegion(Region& region, bool addressable) {
         const bool written = region.writable && WritesOverlap(region.begin, static_cast<std::size_t>(bytes));
         if (!region.sparse) {
             GuestMemory::Read(region.begin, region.buffer->Bytes());
+            readBytes += region.buffer->Bytes().size();
             if (written) region.uploaded.assign(region.buffer->Bytes().begin(), region.buffer->Bytes().end());
         } else {
             // `uploaded` holds the backed pieces back to back.
@@ -3096,15 +3074,43 @@ void GuestBufferMemory::copyRegion(Region& region, bool addressable) {
                 if (zeroGaps && at > cursor) std::memset(target.data() + cursor, 0, at - cursor);
                 const auto piece = target.subspan(at, static_cast<std::size_t>(last - first));
                 GuestMemory::Read(first, piece);
+                readBytes += piece.size();
                 if (written) region.uploaded.insert(region.uploaded.end(), piece.begin(), piece.end());
                 cursor = at + piece.size();
             }
             if (zeroGaps && cursor < target.size()) std::memset(target.data() + cursor, 0, target.size() - cursor);
         }
     }
-    else std::memcpy(region.buffer->Bytes().data(), region.snapshot.data(), region.snapshot.size());
+    else {
+        std::memcpy(region.buffer->Bytes().data(), region.snapshot.data(), region.snapshot.size());
+        readBytes += region.snapshot.size();
+    }
     region.snapshot.clear();
     if (profile) readUs.fetch_add(microsecondsSince(readStart), std::memory_order_relaxed);
+    if (profile) {
+        static std::mutex reasonsMutex;
+        static std::uint64_t uploads = 0, noImport = 0, noImportBytes = 0, misaligned = 0, misalignedBytes = 0, snapshotOnly = 0, snapshotBytes = 0;
+        static std::uint64_t logicalBytes = 0, readTotalBytes = 0;
+        static std::map<std::uint64_t, std::pair<std::uint64_t, std::uint64_t>> outside;
+        std::lock_guard lock(reasonsMutex);
+        const auto bufferBytes = region.buffer->Bytes().size();
+        logicalBytes += bytes;
+        readTotalBytes += readBytes;
+        if (!region.hostBacked && !region.writable) { ++snapshotOnly; snapshotBytes += bufferBytes; }
+        else if (inImport) { ++misaligned; misalignedBytes += bufferBytes; }
+        else {
+            ++noImport;
+            noImportBytes += bufferBytes;
+            auto& bucket = outside[region.begin >> 28u];
+            ++bucket.first;
+            bucket.second += bufferBytes;
+        }
+        if (++uploads % 1000 == 0) {
+            AgcDriver::ProfilePrint_nid_no_patch("[buffers] %llu completed CPU-copy operations: logical spans %.0f MiB, buffer spans %.0f MiB, bytes read %.0f MiB; %llu snapshots (%.0f MiB), %llu misaligned in imports (%.0f MiB), %llu outside imports (%.0f MiB):", static_cast<unsigned long long>(uploads), logicalBytes / 1048576.0, (snapshotBytes + misalignedBytes + noImportBytes) / 1048576.0, readTotalBytes / 1048576.0, static_cast<unsigned long long>(snapshotOnly), snapshotBytes / 1048576.0, static_cast<unsigned long long>(misaligned), misalignedBytes / 1048576.0, static_cast<unsigned long long>(noImport), noImportBytes / 1048576.0);
+            for (const auto& [granule, counts] : outside) AgcDriver::ProfilePrint_nid_no_patch(" 0x%llx0000000:%llu/%.0fMiB", static_cast<unsigned long long>(granule), static_cast<unsigned long long>(counts.first), counts.second / 1048576.0);
+            AgcDriver::ProfilePrint_nid_no_patch("\n");
+        }
+    }
 }
 
 void GuestBufferMemory::recordGpuCopies(std::span<Region* const> copies, bool addressable) {
