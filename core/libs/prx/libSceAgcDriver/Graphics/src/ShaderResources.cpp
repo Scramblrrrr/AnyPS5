@@ -3895,7 +3895,7 @@ std::vector<VkDescriptorSetLayoutBinding> ShaderResources::LayoutBindings() cons
 
 std::vector<VkDescriptorBindingFlags> ShaderResources::LayoutBindingFlags() const {
     std::vector<VkDescriptorBindingFlags> result;
-    for (const auto& binding : bindings) result.push_back(binding.flags);
+    for (const auto& binding : bindings) result.push_back(binding.flags | (updateAfterBind && binding.layout.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ? VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT : 0));
     return result;
 }
 
