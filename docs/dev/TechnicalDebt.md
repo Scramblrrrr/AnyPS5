@@ -1,5 +1,7 @@
 # Project technical debt
 
+- [Committed descriptor heap mirrors](../../core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp): the local `APS5_COMMITTED_HEAP_MIRROR` experiment admits fully committed live descriptor ranges of at least 2 MiB to the existing registered, releasable, write-watched heap mirror path. It is disabled by default. Mirror budget and allocation-lifetime checks still apply, and unregistered or unwatched ranges retain copies. Synthetic tests cover reuse, changed-block refresh, write-back precedence and lifetime; title performance, concurrent queued draws and Linux behavior are unverified. Admission can precede creating a new host import, so this is not an upstream-ready import policy.
+
 - [Reused depth storage](../../core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp): storage views incompatible with a cached depth plane use guest memory. The descriptor check does not prove allocation reuse or transfer the last depth writer into an incompatible view; compatible views retain the depth-transfer path.
 
 ### Build

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <initializer_list>
@@ -634,6 +635,101 @@ void sparseHeapTests(const Context& context, const BdaTestAccess& access) {
     releaseSparse(block, reserved);
 }
 
+void committedDescriptorHeapMirrorTests(const Context& context, const BdaTestAccess& access) {
+#ifdef _WIN32
+    if (!GuestArena::GuestArenaAvailable_nid_postfix() || !GuestArena::GuestArenaWriteWatched_nid_postfix()) return;
+    constexpr std::size_t bytes = 2u << 20u;
+    void* block = GuestArena::GuestArenaAllocate_nid_postfix(bytes, 65536);
+    GuestArena::GuestArenaCommit_nid_postfix(block, bytes, PAGE_READWRITE, 65536);
+    auto* guest = static_cast<std::uint8_t*>(block);
+    std::memset(block, 0x5a, bytes);
+    const auto base = reinterpret_cast<std::uintptr_t>(block);
+    const auto registry = [&](bool add) {
+        auto* mutation = GuestAllocations::GuestAllocationsBegin_nid_postfix();
+        if (add) GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, block, bytes, true, true, false);
+        else GuestAllocations::GuestAllocationsRemove_nid_postfix(mutation, block);
+        GuestAllocations::GuestAllocationsEnd_nid_postfix(mutation);
+    };
+    const auto sweep = [&] {
+        GuestBufferMemory memory(context);
+        memory.AcquireRegistered();
+        memory.Upload(true);
+        memory.WriteBack();
+    };
+    const auto bind = [&](bool written, const std::function<void(std::span<std::byte>, const VkDescriptorBufferInfo&)>& gpu) {
+        GuestBufferMemory memory(context);
+        if (written) memory.AddWritable(base, bytes);
+        else memory.AddReadable(base, bytes);
+        memory.Upload(false);
+        std::uint32_t adjustment = 0;
+        const auto view = memory.Descriptor(base, bytes, adjustment);
+        Require(adjustment == 0 && view.range == bytes, "a committed descriptor heap changed its range");
+        Require(memory.CopiedBytes() == 0, "a committed descriptor heap was charged as a fresh copy");
+        gpu(access.bytes(view.buffer), view);
+        memory.WriteBack();
+        return view;
+    };
+    sweep();
+    registry(true);
+    _putenv_s("APS5_COMMITTED_HEAP_MIRROR", "1");
+    const auto before = MirrorCounters();
+    const auto first = bind(true, [&](std::span<std::byte> data, const VkDescriptorBufferInfo& view) {
+        Require(data[view.offset] == std::byte{0x5a} && data[view.offset + bytes - 1] == std::byte{0x5a}, "a committed descriptor heap mirror missed guest bytes");
+        data[view.offset + 8] = std::byte{0x77};
+        data[view.offset + 16] = std::byte{0x33};
+        guest[16] = 0x44;
+        guest[24] = 0x55;
+    });
+    const auto made = MirrorCounters();
+    Require(made.heapMirrors == before.heapMirrors + 1 && made.heapBytes == before.heapBytes + bytes && made.rebuilds == before.rebuilds + 1, "a committed descriptor heap was not mirrored once");
+    Require(guest[8] == 0x77 && guest[16] == 0x33 && guest[24] == 0x55, "committed heap write-back changed GPU-write precedence or unrelated CPU bytes");
+    const auto second = bind(false, [&](std::span<std::byte> data, const VkDescriptorBufferInfo& view) {
+        Require(data[view.offset + 8] == std::byte{0x77} && data[view.offset + 16] == std::byte{0x33} && data[view.offset + 24] == std::byte{0x55}, "a committed heap mirror missed refreshed bytes");
+    });
+    const auto again = MirrorCounters();
+    Require(second.buffer == first.buffer && again.rebuilds == made.rebuilds && again.blocksCopied == made.blocksCopied + 1, "a committed heap was copied again beyond its changed block");
+    bind(false, [](std::span<std::byte>, const VkDescriptorBufferInfo&) {});
+    Require(MirrorCounters().blocksCopied == again.blocksCopied, "an unchanged committed heap was copied again");
+    registry(false);
+    sweep();
+    Require(MirrorCounters().heapMirrors == before.heapMirrors && MirrorCounters().heapBytes == before.heapBytes, "a committed heap mirror outlived its allocation");
+    {
+        void* raw = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        Require(raw != nullptr, "unwatched descriptor heap allocation failed");
+        std::memset(raw, 0x31, bytes);
+        auto* mutation = GuestAllocations::GuestAllocationsBegin_nid_postfix();
+        GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, raw, bytes, true, true, false);
+        GuestAllocations::GuestAllocationsEnd_nid_postfix(mutation);
+        {
+            GuestBufferMemory memory(context);
+            const auto address = reinterpret_cast<std::uintptr_t>(raw);
+            memory.AddWritable(address, bytes);
+            memory.Upload(false);
+            std::uint32_t adjustment = 0;
+            const auto view = memory.Descriptor(address, bytes, adjustment);
+            const auto data = access.bytes(view.buffer);
+            Require(memory.CopiedBytes() == bytes && data[view.offset] == std::byte{0x31} && data[view.offset + bytes - 1] == std::byte{0x31}, "an unwatched committed heap did not retain the copy path");
+            data[view.offset + 8] = std::byte{0x77};
+            data[view.offset + 16] = std::byte{0x33};
+            static_cast<std::uint8_t*>(raw)[16] = 0x44;
+            static_cast<std::uint8_t*>(raw)[24] = 0x55;
+            memory.WriteBack();
+            Require(static_cast<std::uint8_t*>(raw)[8] == 0x77 && static_cast<std::uint8_t*>(raw)[16] == 0x33 && static_cast<std::uint8_t*>(raw)[24] == 0x55, "the mirror differs from copied-heap write-back precedence");
+        }
+        mutation = GuestAllocations::GuestAllocationsBegin_nid_postfix();
+        GuestAllocations::GuestAllocationsRemove_nid_postfix(mutation, raw);
+        GuestAllocations::GuestAllocationsEnd_nid_postfix(mutation);
+        VirtualFree(raw, 0, MEM_RELEASE);
+    }
+    _putenv_s("APS5_COMMITTED_HEAP_MIRROR", "");
+    GuestArena::GuestArenaReset_nid_postfix(block, bytes);
+    GuestArena::GuestArenaRelease_nid_postfix(block, bytes);
+#else
+    static_cast<void>(context);
+    static_cast<void>(access);
+#endif
+}
+
 void sparseHeapMirrorTests(const Context& context, const BdaTestAccess& access) {
 #ifdef _WIN32
     if (!GuestArena::GuestArenaAvailable_nid_postfix() || !GuestArena::GuestArenaWriteWatched_nid_postfix()) {
@@ -919,6 +1015,7 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     importedFreshTests(context);
     gpuMappingTests(context);
     sparseHeapTests(context, access);
+    committedDescriptorHeapMirrorTests(context, access);
     sparseHeapMirrorTests(context, access);
     Require(AddressCopyOverflow({{0x1000, 0x3000, 0x2000, "uncommitted pages"}}, 0x2000).empty(), "copies within the limit were refused");
     const auto copies = AddressCopyOverflow({{0x1000, 0x2000, 0x1000, "not mirrored"}, {0x10000, 0x30000, 0x18000, "uncommitted pages"}}, 0x2000);

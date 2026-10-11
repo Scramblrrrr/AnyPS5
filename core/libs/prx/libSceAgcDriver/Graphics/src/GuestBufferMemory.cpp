@@ -2200,7 +2200,8 @@ bool GuestBufferMemory::servesView(const Region& region, std::uint64_t view) {
 }
 
 bool GuestBufferMemory::sparseHeapCandidate(const Region& region) {
-    return region.sparseHeap && region.sparse && region.mirror == nullptr && region.direct == nullptr && (region.hostBacked || region.writable) && mirrorsEnabled() && sparseMirrorsEnabled();
+    const bool committedHeap = !region.sparse && region.end - region.begin >= (2u << 20u) && std::getenv("APS5_COMMITTED_HEAP_MIRROR") != nullptr;
+    return ((region.sparseHeap && region.sparse) || committedHeap) && region.mirror == nullptr && region.direct == nullptr && (region.hostBacked || region.writable) && mirrorsEnabled() && sparseMirrorsEnabled();
 }
 
 bool GuestBufferMemory::bindSparseMirror(Region& region, const GuestAllocations::Lease& lease) {
