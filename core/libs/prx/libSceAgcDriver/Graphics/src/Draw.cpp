@@ -731,7 +731,7 @@ std::set<std::uint32_t> CachedFragmentOutputs(const Context& context, std::span<
     }
     std::set<std::uint32_t> outputs;
     try {
-        outputs = ValidateShaders(shaders, state, context.subgroup, context.fragmentShaderBarycentric, context.descriptorIndexing, context.imageInt64Atomics, context.geometryShader, context.sampleRateShading, context.bufferInt64Atomics);
+        outputs = ValidateShaders(shaders, state, context.subgroup, context.fragmentShaderBarycentric, context.descriptorIndexing, context.imageInt64Atomics, context.geometryShader, context.sampleRateShading, context.bufferInt64Atomics, context.runtimeDescriptorArray);
     } catch (const std::exception& error) {
         if (keyed) {
             std::lock_guard lock(validationMutex());
@@ -1881,6 +1881,7 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
         binding.gpuTiling = color.tileMode == ColorTileMode::RenderTarget && context.detiler != nullptr;
         APS5_LOG_OUT_DEBUG("Creating color target %zu address=0x%llx bytes=%llu extent=%ux%u", index, static_cast<unsigned long long>(color.address), static_cast<unsigned long long>(color.bytes), color.extent.width, color.extent.height);
         const ColorTargetLayout colorLayout(color.extent.width, color.extent.height, color.tileMode, color.elementBytes);
+        RetireDepthSurfaces(context.device, color.address, colorLayout.Bytes());
         constexpr VkBufferUsageFlags copies = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         timer.phase(PhaseSetup);
         // Debug aid: APS5_NO_RESIDENT_TARGETS=1 copies every target in and out again.
