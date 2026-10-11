@@ -85,33 +85,33 @@ std::uint32_t TranslationContext::f32DenormalFlushFor(const RdnaInstruction& ins
     case RdnaOpcode::VCmpLeF32:
     case RdnaOpcode::VCmpLgF32:
     case RdnaOpcode::VCmpLtF32:
-    case RdnaOpcode::VCmpNeqF32:
-    case RdnaOpcode::VCmpNgeF32:
-    case RdnaOpcode::VCmpNgtF32:
-    case RdnaOpcode::VCmpNleF32:
-    case RdnaOpcode::VCmpNlgF32:
-    case RdnaOpcode::VCmpNltF32:
     case RdnaOpcode::VCmpxEqF32:
     case RdnaOpcode::VCmpxGeF32:
     case RdnaOpcode::VCmpxGtF32:
     case RdnaOpcode::VCmpxLeF32:
     case RdnaOpcode::VCmpxLgF32:
     case RdnaOpcode::VCmpxLtF32:
+    case RdnaOpcode::VCvtI32F32:
+    case RdnaOpcode::VCvtU32F32:
+        flush = host ? 0u : 1u;
+        break;
+    case RdnaOpcode::VCmpNeqF32:
+    case RdnaOpcode::VCmpNgeF32:
+    case RdnaOpcode::VCmpNgtF32:
+    case RdnaOpcode::VCmpNleF32:
+    case RdnaOpcode::VCmpNlgF32:
+    case RdnaOpcode::VCmpNltF32:
     case RdnaOpcode::VCmpxNeqF32:
     case RdnaOpcode::VCmpxNgeF32:
     case RdnaOpcode::VCmpxNgtF32:
     case RdnaOpcode::VCmpxNleF32:
     case RdnaOpcode::VCmpxNlgF32:
     case RdnaOpcode::VCmpxNltF32:
-    case RdnaOpcode::VCvtI32F32:
-    case RdnaOpcode::VCvtU32F32:
     case RdnaOpcode::VCvtPknormI16F32:
     case RdnaOpcode::VCvtPknormU16F32:
     case RdnaOpcode::VCvtPkU8F32:
     case RdnaOpcode::VCvtPkrtzF16F32:
     case RdnaOpcode::VCvtF16F32:
-        flush = host ? 0u : 1u;
-        break;
     case RdnaOpcode::VCvtRpiI32F32:
     case RdnaOpcode::VCvtFlrI32F32:
     case RdnaOpcode::VFrexpExpI32F32:
