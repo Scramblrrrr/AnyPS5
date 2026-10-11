@@ -101,7 +101,12 @@ std::vector<std::uint32_t> ValidateAndOptimizeSpirv(std::span<const std::uint32_
     // APS5_SPIRV_OPT=full restores the SPIRV-Tools performance pipeline, =none skips optimization.
     const bool allowFolding = !HasLimitedUseTypes(spirv);
     const bool full = mode != nullptr && std::string(mode) == "full";
-    if (full && allowFolding) {
+    if (mode != nullptr && std::string(mode) == "lean") {
+        optimizer.RegisterPass(spvtools::CreateUnifyConstantPass())
+            .RegisterPass(spvtools::CreateDeadBranchElimPass())
+            .RegisterPass(spvtools::CreateBlockMergePass())
+            .RegisterPass(spvtools::CreateEliminateDeadConstantPass());
+    } else if (full && allowFolding) {
         optimizer.RegisterPerformancePasses(true);
     } else {
         optimizer.RegisterPass(spvtools::CreateWrapOpKillPass())
