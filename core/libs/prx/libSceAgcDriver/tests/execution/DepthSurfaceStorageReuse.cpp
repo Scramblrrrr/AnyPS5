@@ -14,6 +14,7 @@
 #include <windows.h>
 #endif
 #include <array>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -203,7 +204,9 @@ void Run(const Context& context) {
     const auto other = StorageRefusal(context, address, ReusedExtent);
     Require(other.empty(), "a " + Size(ReusedExtent) + " storage view over the memory of a " + Size(DepthExtent) + " D16 surface did not take the storage path: " + other);
     const auto own = StorageRefusal(context, address, DepthExtent);
-    Require(own.find("storage image access to depth surface") != std::string::npos, "a " + Size(DepthExtent) + " storage view of a " + Size(DepthExtent) + " D16 surface was not refused" + (own.empty() ? std::string() : ": " + own));
+    Require(own.empty(), "a " + Size(DepthExtent) + " R32 storage view over D16 memory did not take the storage path: " + own);
+    const auto* guest = reinterpret_cast<const std::uint8_t*>(address);
+    Require(std::all_of(guest, guest + BlockBytes, [](std::uint8_t value) { return value == 0x3c; }), "incompatible storage-view creation changed guest memory");
 }
 
 }
