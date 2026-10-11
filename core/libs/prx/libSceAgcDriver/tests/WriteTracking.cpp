@@ -184,6 +184,47 @@ void CheckPrivateMappingReuse() {
     GuestArena::GuestArenaReset_nid_postfix(replacement, 3 * Block);
     GuestArena::GuestArenaRelease_nid_postfix(replacement, 3 * Block);
 }
+
+std::uint64_t ArenaHostHole() {
+    std::uintptr_t arena = 0;
+    std::size_t arenaBytes = 0;
+    GuestArena::GuestArenaRange_nid_postfix(&arena, &arenaBytes);
+    for (auto cursor = arena; cursor < arena + arenaBytes;) {
+        MEMORY_BASIC_INFORMATION info{};
+        Require(VirtualQuery(reinterpret_cast<void*>(cursor), &info, sizeof(info)) == sizeof(info), "cannot enumerate arena host holes");
+        if (GuestArena::GuestArenaHostRegionOverlaps_nid_postfix(cursor, 1)) return cursor;
+        const auto next = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
+        Require(next > cursor, "arena enumeration did not advance");
+        cursor = next;
+    }
+    throw std::runtime_error("the write-watched arena contains no host hole to test");
+}
+
+void CheckHostHole() {
+    constexpr std::size_t bytes = 64;
+    const auto hole = ArenaHostHole();
+    const auto before = TrackerGeneration();
+    Require(!Watched(hole, bytes), "an arena host hole reads as watched");
+    Require(CollectWrites(hole, bytes) == 0 && CollectWritesUncached(hole, bytes) == 0, "an arena host hole was collected");
+    Require(StoredOver(hole, bytes, before), "an arena host hole reads as not stored over");
+    Require(!UnchangedSince(hole, bytes, before), "an arena host hole reads as unchanged");
+    const std::array queries{UnchangedQuery{hole, bytes, before}};
+    Require(!UnchangedSinceAll(queries), "an arena host hole reads as unchanged in a batch");
+    Require(!UnchangedSinceCollected(hole, bytes, before), "an arena host hole reads as unchanged since a collect");
+    Require(MarkWritten(hole, bytes) == 0, "a driver store into an arena host hole is stamped");
+    Require(StoreOwnBytes(hole, bytes, [] {}) == 0, "an own store into an arena host hole is stamped");
+    Require(!WrittenSince(hole, bytes, before), "an arena host hole reads its stamps as written");
+    std::array<std::uint64_t, 1> generations{before};
+    std::array<std::uint8_t, 1> changed{};
+    std::array<std::uint8_t, 1> cpu{};
+    Require(!ChangedBlocks(hole, bytes, generations, changed, cpu) && changed[0] == BlockWritten && cpu[0] == 1, "an arena host hole uses block stamps");
+    bool imported = false;
+    Require(ImportWatched(hole, bytes, [&] {
+        imported = true;
+        return true;
+    }) && imported, "an import into an arena host hole did not run");
+    Require(!Watched(hole, bytes), "an import made an arena host hole watched");
+}
 #endif
 
 void CheckVersionRanges() {
@@ -312,6 +353,7 @@ int main() {
         CheckUnwatch();
 #ifdef _WIN32
         CheckPrivateMappingReuse();
+        CheckHostHole();
 #endif
         CheckVersionRanges();
         CheckCollectBoundaries();
