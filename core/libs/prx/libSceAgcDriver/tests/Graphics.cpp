@@ -1620,6 +1620,20 @@ void clipDistanceTests() {
     Require(AgcDriver::Graphics::DrawRejection(queue, false).find("more than eight") != std::string::npos, "nine clip distances passed the precheck");
 }
 
+void positionExportLayoutTests() {
+    using AgcDriver::Graphics::PositionExportLayout;
+    Require(PositionExportLayout(0x01240000u) == 0u, "a misc-vector-only PA_CL_VS_OUT_CNTL changed the vertex artifact layout");
+    Require(PositionExportLayout(0x00400000u) == 0u, "a distance vector without enables changed the vertex artifact layout");
+    Require(PositionExportLayout(0x0144000fu) == 0x0040000fu, "the layout kept point size, layer or viewport bits");
+    Require(PositionExportLayout(0x00e00105u) == 0x00e00105u, "the layout dropped distance enables or vectors");
+    auto queue = makeState();
+    queue.context[0x207] = 0x00c000ffu;
+    queue.context[0x1b3] = 2;
+    queue.context[0x1b4] = 2;
+    Require(AgcDriver::Graphics::DrawRejection(queue, false).empty(), "eight clip distances over CCDIST0 and CCDIST1 were rejected by the precheck");
+    Require(AgcDriver::Graphics::DecodeState(queue).paClVsOutCntl == 0x00c000ffu, "eight clip distances over CCDIST0 and CCDIST1 did not decode");
+}
+
 void DepthClipTests() {
     auto queue = makeState();
     const auto direct = AgcDriver::Graphics::DecodeState(queue);
@@ -4655,6 +4669,7 @@ int main(int argc, char** argv) {
         uint16ExportTests();
         uint8x4TargetTests();
         clipDistanceTests();
+        positionExportLayoutTests();
         ShaderStageTests();
         NggVertexWorkgroupTests();
         TuningFieldTests();

@@ -115,6 +115,15 @@ struct State {
     std::uint32_t paClVsOutCntl = 0;
 };
 
+// The PA_CL_VS_OUT_CNTL bits a vertex program's artifact depends on: the clip and cull distance
+// enables and the three position-export vectors. Without a distance enabled the vectors place
+// nothing (the point size, layer and viewport bits are left out), so the layout is 0 and the draw
+// keeps the artifact registration prepared.
+inline constexpr std::uint32_t PositionExportLayout(std::uint32_t paClVsOutCntl) {
+    const auto layout = paClVsOutCntl & (0xffffu | (1u << 21u) | (1u << 22u) | (1u << 23u));
+    return (layout & 0xffffu) != 0u ? layout : 0u;
+}
+
 ShaderStages DecodeShaderStages(const QueueState& queue, bool vertexWorkgroup = false);
 State DecodeState(const QueueState& queue, bool vertexWorkgroup = false);
 std::array<std::uint8_t, 8> ExportMappings(const State& state);
