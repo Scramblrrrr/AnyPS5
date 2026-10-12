@@ -63,6 +63,7 @@ struct ImageMirror {
     std::vector<std::pair<std::uint64_t, std::uint64_t>> committed;
     std::vector<std::uint64_t> generations;
     std::weak_ptr<const GuestAllocations::Range> range;
+    std::vector<std::weak_ptr<const GuestAllocations::Range>> componentRanges;
     std::shared_ptr<Buffer> buffer;
     // Writable ranges only: the guest bytes the mirror holds, compared on refresh and at write-back.
     std::vector<std::byte> shadow;
@@ -920,6 +921,19 @@ bool sameRange(const std::weak_ptr<const GuestAllocations::Range>& mirrored, con
     return !mirrored.owner_before(range) && !range.owner_before(mirrored);
 }
 
+bool mirrorRangesExpired(const ImageMirror& mirror) {
+    return mirror.range.expired() || std::any_of(mirror.componentRanges.begin(), mirror.componentRanges.end(), [](const auto& range) { return range.expired(); });
+}
+
+bool sameMirrorRanges(const ImageMirror& mirror, const std::shared_ptr<const GuestAllocations::Range>& range, std::span<const std::shared_ptr<const GuestAllocations::Range>> components) {
+    const auto& first = components.empty() ? range : components.front();
+    if (!sameRange(mirror.range, first) || mirror.componentRanges.size() != components.size()) return false;
+    for (std::size_t index = 0; index < components.size(); ++index) {
+        if (!sameRange(mirror.componentRanges[index], components[index])) return false;
+    }
+    return true;
+}
+
 // One 64 KiB (or shorter, at a range's ends) block of a writable mirror to compare with guest memory.
 struct RefreshBlock {
     ImageMirror* mirror;
@@ -1280,7 +1294,7 @@ std::vector<std::pair<std::size_t, std::uint64_t>> refreshHeapRuns(const GuestBu
 // The mirror for a leased image range: the existing one, or a new one when none exists or the
 // registered Range object changed (a protection change). Null when the range cannot be mirrored. An
 // existing writable mirror's blocks are appended to `blocks` for the caller's one compare of every
-std::shared_ptr<ImageMirror> acquireMirror(const Context& context, const std::shared_ptr<const GuestAllocations::Range>& range, std::vector<RefreshBlock>& blocks, bool heap) {
+std::shared_ptr<ImageMirror> acquireMirror(const Context& context, const std::shared_ptr<const GuestAllocations::Range>& range, std::vector<RefreshBlock>& blocks, bool heap, std::span<const std::shared_ptr<const GuestAllocations::Range>> components = {}) {
     auto& state = Mirrors();
     std::shared_ptr<ImageMirror> mirror;
     {
@@ -1294,7 +1308,7 @@ std::shared_ptr<ImageMirror> acquireMirror(const Context& context, const std::sh
         }
         if (state.failed.contains(range->address)) return nullptr;
         const auto found = state.entries.find(range->address);
-        if (found != state.entries.end() && sameRange(found->second->range, range) && found->second->reserved == range->bytes && found->second->writable == range->writable && found->second->heap == heap) mirror = found->second;
+        if (found != state.entries.end() && sameMirrorRanges(*found->second, range, components) && found->second->reserved == range->bytes && found->second->writable == range->writable && found->second->heap == heap) mirror = found->second;
     }
     if (mirror != nullptr) {
         if (!mirror->sparse) {
@@ -1317,7 +1331,8 @@ std::shared_ptr<ImageMirror> acquireMirror(const Context& context, const std::sh
     mirror->sparse = sparse;
     mirror->writable = range->writable;
     mirror->heap = heap;
-    mirror->range = range;
+    mirror->range = components.empty() ? range : components.front();
+    mirror->componentRanges.assign(components.begin(), components.end());
     if (heap) {
         std::uint64_t generation = 0;
         if (sparse) {
@@ -1398,10 +1413,16 @@ void sweepMirrors() {
     bool pinned = space != nullptr;
     std::size_t leased = 0;
     for (auto it = state.entries.begin(); it != state.entries.end();) {
-        if (!it->second->range.expired()) {
+        if (!mirrorRangesExpired(*it->second)) {
             if (pinned) {
                 while (leased < space->lease.size() && space->lease[leased]->address < it->first) ++leased;
                 pinned = leased < space->lease.size() && sameRange(it->second->range, space->lease[leased]);
+                for (const auto& component : it->second->componentRanges) {
+                    const auto owner = component.lock();
+                    if (owner == nullptr) { pinned = false; break; }
+                    const auto found = std::lower_bound(space->lease.begin(), space->lease.end(), owner->address, [](const auto& item, std::uint64_t address) { return item->address < address; });
+                    if (found == space->lease.end() || !sameRange(component, *found)) { pinned = false; break; }
+                }
             }
             ++it;
             continue;
@@ -2378,7 +2399,28 @@ bool GuestBufferMemory::bindSparseMirror(Region& region, const GuestAllocations:
     const auto backedEnd = region.backed.empty() ? region.begin : region.backed.back().second;
     const auto neededEnd = std::min(region.end, std::max(backedEnd, std::max(region.lastView, region.begin) + 4u));
     const auto* range = containingRange(lease, region.begin, neededEnd);
-    if (range == nullptr || !range->releasable) {
+    GuestAllocations::Lease components;
+    std::shared_ptr<const GuestAllocations::Range> owner;
+    if (range != nullptr && range->releasable) owner = leasedRangeOwner(lease, range->address);
+    if (owner == nullptr) {
+        auto next = std::upper_bound(lease.begin(), lease.end(), region.begin, [](std::uint64_t address, const auto& item) { return address < item->address; });
+        if (next != lease.begin()) --next;
+        std::uint64_t cursor = region.begin;
+        while (next != lease.end() && cursor < neededEnd) {
+            const auto& component = *next++;
+            if (component->address + component->bytes <= cursor) continue;
+            if (component->address > cursor || !component->readable || !component->releasable || (!components.empty() && component->writable != components.front()->writable)) break;
+            components.push_back(component);
+            cursor = std::min(neededEnd, component->address + component->bytes);
+        }
+        if (cursor == neededEnd && components.size() > 1u) {
+            auto span = std::make_shared<GuestAllocations::Range>(*components.front());
+            span->address = region.begin;
+            span->bytes = static_cast<std::size_t>(neededEnd - region.begin);
+            owner = std::move(span);
+        }
+    }
+    if (owner == nullptr) {
         static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
         static std::atomic<std::uint32_t> reported{0};
         if (profile && reported.fetch_add(1, std::memory_order_relaxed) < 8u) {
@@ -2395,7 +2437,7 @@ bool GuestBufferMemory::bindSparseMirror(Region& region, const GuestAllocations:
     std::vector<RefreshBlock> blocks;
     std::shared_ptr<ImageMirror> mirror;
     try {
-        mirror = acquireMirror(context, leasedRangeOwner(lease, range->address), blocks, true);
+        mirror = acquireMirror(context, owner, blocks, true, components);
     } catch (const std::runtime_error& error) {
         static std::atomic<int> reported{0};
         if (reported.fetch_add(1, std::memory_order_relaxed) < 4) std::fprintf(stderr, "[gpu] %s; copying the sparse heap instead\n", error.what());
@@ -2884,7 +2926,7 @@ void GuestBufferMemory::UploadFinish(bool addressable) {
     // Range.)
     for (auto& region : regions) {
         if (region.mirror == nullptr || !region.subrangeMirror) continue;
-        if (region.mirror->range.expired()) {
+        if (mirrorRangesExpired(*region.mirror)) {
             region.mirror = nullptr;
             region.subrangeMirror = false;
             region.pending = true;
