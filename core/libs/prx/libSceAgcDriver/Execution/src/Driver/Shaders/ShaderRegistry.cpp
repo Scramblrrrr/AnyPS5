@@ -33,7 +33,7 @@ std::shared_ptr<const ShaderRecompiler::SourceHandle> PrepareShaderWithDiagnosti
         return ShaderRecompiler::PrepareShader(request, preparation);
     } catch (...) {
         try {
-            if (std::getenv("APS5_DUMP_SHADERS") != nullptr) static_cast<void>(Driver::dumpRequest(request.shader.codeAddress, request));
+            if (std::getenv("APS5_DUMP_SHADERS") != nullptr || std::getenv("APS5_LOCAL_DUMP_FAILED_SHADERS") != nullptr) static_cast<void>(Driver::dumpRequest(request.shader.codeAddress, request));
         } catch (...) {}
         throw;
     }
