@@ -759,7 +759,7 @@ ImportRun windowRun(ImportRun run, std::uint64_t begin, std::uint64_t end, std::
     return run;
 }
 
-const HostImport* findImport(HostImports& state, std::uint64_t begin, std::uint64_t end);
+const HostImport* findImport(HostImports& state, std::uint64_t begin, std::uint64_t end, bool noteUse = true);
 bool importsStale(const Context& context, const HostImports& state);
 const HostImport* importRunAt(const Context& context, HostImports& state, ImportRun run, bool joined, std::uint64_t address, const GuestAllocations::Lease& lease, std::uint64_t end = 0, bool evict = true);
 
@@ -768,8 +768,8 @@ const HostImport* importAllocation(const Context& context, HostImports& state, s
     const bool fresh = !importsStale(context, state);
     if (fresh && end != 0) {
         if (const auto* current = findImport(state, address, end)) return current;
-    } else if (const auto* current = findImport(state, address, end != 0 ? end : address + 1); current != nullptr && current->joined && sameRange(*current, lease)) {
-        return current;
+    } else if (!fresh) {
+        if (const auto* current = findImport(state, address, end != 0 ? end : address + 1); current != nullptr && current->joined && sameRange(*current, lease)) return current;
     }
     auto run = importRun(lease, address);
     // Without an end the caller views the whole run through the import (AcquireRegistered): a window that holds the
@@ -783,8 +783,8 @@ const HostImport* importAllocation(const Context& context, HostImports& state, s
 }
 
 const HostImport* importJoined(const Context& context, HostImports& state, std::uint64_t begin, std::uint64_t end, const GuestAllocations::Lease& lease) {
-    if (const auto* low = findImport(state, begin, begin + 1); low != nullptr && low->joined) begin = low->base;
-    if (const auto* high = findImport(state, end - 1, end); high != nullptr && high->joined) end = high->base + high->bytes;
+    if (const auto* low = findImport(state, begin, begin + 1, false); low != nullptr && low->joined) begin = low->base;
+    if (const auto* high = findImport(state, end - 1, end, false); high != nullptr && high->joined) end = high->base + high->bytes;
     auto run = joinedRun(lease, begin, end);
     if (run.ranges.empty()) return nullptr;
     if (const auto failed = state.failedJoins.find(run.base); failed != state.failedJoins.end() && sameRun(failed->second, run)) return nullptr;
@@ -802,13 +802,13 @@ const HostImport* importRunAt(const Context& context, HostImports& state, Import
     }
     if (const auto found = state.imports.find(base); found != state.imports.end()) {
         if (sameRun(found->second, run)) return &found->second;
-        if (pointerHeld(state, found->second)) return nullptr;
+        if (!joined && pointerHeld(state, found->second)) return nullptr;
         retireImport(context.device, state, found, lease);
     }
     for (auto it = state.imports.lower_bound(base); it != state.imports.end() && it->first < base + bytes; ++it) {
-        if (pointerHeld(state, it->second)) return nullptr;
+        if (!joined && pointerHeld(state, it->second)) return nullptr;
     }
-    if (auto it = state.imports.lower_bound(base); it != state.imports.begin() && std::prev(it)->second.base + std::prev(it)->second.bytes > base && pointerHeld(state, std::prev(it)->second)) return nullptr;
+    if (auto it = state.imports.lower_bound(base); !joined && it != state.imports.begin() && std::prev(it)->second.base + std::prev(it)->second.bytes > base && pointerHeld(state, std::prev(it)->second)) return nullptr;
     for (auto it = state.imports.lower_bound(base); it != state.imports.end() && it->first < base + bytes;) {
         const auto next = std::next(it);
         retireImport(context.device, state, it, lease);
@@ -996,13 +996,13 @@ void refreshImports(const Context& context, HostImports& state, const GuestAlloc
     for (auto it = state.failedJoins.begin(); it != state.failedJoins.end();) it = sameRun(it->second, joinedRun(lease, it->second.base, it->second.base + it->second.bytes)) ? std::next(it) : state.failedJoins.erase(it);
 }
 
-const HostImport* findImport(HostImports& state, std::uint64_t begin, std::uint64_t end) {
+const HostImport* findImport(HostImports& state, std::uint64_t begin, std::uint64_t end, bool noteUse) {
     auto found = state.imports.upper_bound(begin);
     if (found == state.imports.begin()) return nullptr;
     --found;
     const auto& entry = found->second;
     if (begin < entry.base || end > entry.base + entry.bytes) return nullptr;
-    entry.lastUse = ++state.useCounter;
+    if (noteUse) entry.lastUse = ++state.useCounter;
     return &entry;
 }
 
