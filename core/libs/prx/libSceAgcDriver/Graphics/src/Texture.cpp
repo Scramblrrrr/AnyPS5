@@ -335,7 +335,7 @@ Texture::Texture(const Context& context, TextureDetiler& detiler, const GuestTex
         allocation.allocationSize = requirements.size;
         allocationBytes = requirements.size;
         allocation.memoryTypeIndex = context.MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        Check(AllocateGpuMemory(context, allocation, owned->memory, GpuMemoryKind::Texture, "texture"), "vkAllocateMemory texture");
+        AllocateImageMemory(context, allocation, &owned->memory, "vkAllocateMemory texture", GpuMemoryKind::Texture);
         owned->bytes = allocation.allocationSize;
         Check(context.Function<PFN_vkBindImageMemory>("vkBindImageMemory")(context.device, image, owned->memory, 0), "vkBindImageMemory");
 
@@ -999,7 +999,7 @@ StorageTexture::StorageTexture(const Context& context, TextureDetiler& detiler, 
         allocation.allocationSize = requirements.size;
         memoryBytes = requirements.size;
         allocation.memoryTypeIndex = context.MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        Check(AllocateGpuMemory(context, allocation, memory, GpuMemoryKind::StorageImage, "storage texture"), "vkAllocateMemory storage texture");
+        AllocateImageMemory(context, allocation, &memory, "vkAllocateMemory storage texture", GpuMemoryKind::StorageImage);
         memoryBytes = allocation.allocationSize;
         Check(context.Function<PFN_vkBindImageMemory>("vkBindImageMemory")(context.device, image, memory, 0), "vkBindImageMemory storage");
     } catch (...) {
