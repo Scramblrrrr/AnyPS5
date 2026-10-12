@@ -210,6 +210,22 @@ void CheckHostHole() {
     const auto before = TrackerGeneration();
     Require(!Watched(hole, bytes), "an arena host hole reads as watched");
     Require(CollectWrites(hole, bytes) == 0 && CollectWritesUncached(hole, bytes) == 0, "an arena host hole was collected");
+    auto* watched = static_cast<std::uint8_t*>(AllocateWatched(Block, true));
+    struct Cleanup {
+        void* memory;
+        ~Cleanup() { GuestArena::GuestArenaRelease_nid_postfix(memory, Block); }
+    } cleanup{watched};
+    const auto base = reinterpret_cast<std::uint64_t>(watched);
+    for (unsigned epoch = 0; epoch < 2; ++epoch) {
+        BumpCollectEpoch();
+        watched[7] ^= 1;
+        Require(CollectWrites(base + 7, 1) != 0, "a warm host-hole check could not collect its watched range");
+        for (unsigned repeat = 0; repeat < 3; ++repeat) {
+            Require(CollectWrites(base + 7, 1) != 0, "a warm host-hole check lost its watched range");
+            Require(CollectWrites(hole, bytes) == 0, "a repeated host-hole query hit a collect memo");
+            Require(CollectWrites(hole + 7, 1) == 0, "a page-rounded host-hole query hit a collect memo");
+        }
+    }
     Require(StoredOver(hole, bytes, before), "an arena host hole reads as not stored over");
     Require(!UnchangedSince(hole, bytes, before), "an arena host hole reads as unchanged");
     const std::array queries{UnchangedQuery{hole, bytes, before}};
