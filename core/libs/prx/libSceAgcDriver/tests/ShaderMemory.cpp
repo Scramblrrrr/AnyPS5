@@ -21,6 +21,7 @@
 #include <spirv/unified1/spirv.hpp>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
@@ -3343,7 +3344,7 @@ void verifyCubeDepthCompareMode() {
     require(modes[selected].cube && (modes[selected].emulatedCompare & EmulatedCompare::Enabled) != 0u, "cube color comparison did not select its emulated runtime mode");
 }
 
-void verifyCapturedRegionBoundaries() {
+void verifyCapturedRegionBoundaries(bool benchmark = false) {
     using namespace ShaderRecompiler;
     const std::array<std::uint32_t, 8> code{0xf4040004u, 0xfa000000u, 0xf4000080u, 0xfa000000u, 0x7e000202u, 0xf80008cfu, 0u, 0xbf810000u};
     alignas(4096) std::array<std::uint32_t, 1024> payload{};
@@ -3381,11 +3382,31 @@ void verifyCapturedRegionBoundaries() {
     capture(2);
     require(payloadRanges(memory.TakeRecentRegions()) == std::vector<std::pair<std::uint64_t, std::size_t>>{{base + 63 * 4, 4}}, "capture region boundaries: a repeated read included earlier reads");
     require(payloadRanges(memory.Regions()) == expected, "capture region boundaries: resetting recent reads changed the union");
+    if (benchmark) {
+        constexpr std::size_t Iterations = 10000;
+        std::array<double, 9> samples{};
+        std::size_t checksum = 0;
+        for (std::size_t i = 0; i < 1000; ++i) checksum += memory.Regions().size();
+        for (auto& sample : samples) {
+            const auto started = std::chrono::steady_clock::now();
+            for (std::size_t i = 0; i < Iterations; ++i) {
+                const auto regions = memory.Regions();
+                for (const auto& region : regions) checksum += region.bytes.size();
+            }
+            sample = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count() / Iterations;
+        }
+        std::ranges::sort(samples);
+        std::cout << "capture-region extraction: median " << samples[samples.size() / 2] << " us/call; checksum " << checksum << '\n';
+    }
 }
 
 int main(int argc, char** argv) {
     try {
         using namespace ShaderRecompiler;
+        if (argc == 2 && std::string_view(argv[1]) == "--capture-regions-benchmark") {
+            verifyCapturedRegionBoundaries(true);
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--frontend-pair") {
             verifyFrontendPair();
             std::cout << "Prepared frontend reuse preserves full and partial-thread programs\n";
