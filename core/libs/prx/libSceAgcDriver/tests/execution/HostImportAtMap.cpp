@@ -208,9 +208,10 @@ int main() {
             Require(device->FillBuffer(probe.Address(), BlockBytes, pattern), "host import at map: the fill that keeps the recorder busy was not imported");
         }
         GuestAllocations::Mutation().Add(window + HalfBytes, HalfBytes, true, true, true);
-        Require(device->ImportGuestMemory(mappedAt(window + HalfBytes), GuestAllocations::GuestAllocationsGeneration_nid_postfix(), false), "host import at map: the mapping that completes the window needed the GPU lock while the recorder held work");
+        Require(!device->ImportGuestMemory(mappedAt(window + HalfBytes), GuestAllocations::GuestAllocationsGeneration_nid_postfix(), false), "host import at map: a replacement mapping did not request the GPU lock");
         {
             std::lock_guard lock(AgcDriver::GuestMemory::GpuMutex());
+            Require(device->ImportGuestMemory(mappedAt(window + HalfBytes), GuestAllocations::GuestAllocationsGeneration_nid_postfix(), true), "host import at map: the replacement mapping refused its locked retry");
             const std::array<std::uint32_t, 4> pattern{13u, 14u, 15u, 16u};
             Require(device->FillBuffer(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(window)), WindowBytes, pattern), "host import at map: the window completed by a second mapping was not imported as one");
             device->WaitIdle();
