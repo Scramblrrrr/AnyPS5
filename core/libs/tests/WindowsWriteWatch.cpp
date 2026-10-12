@@ -82,7 +82,8 @@ void CheckArmed() {
     region.Write(4, 2);
     Require(faults == before, "import armed fresh memory");
     Require(region.Collect(Collection::All, 0, 1) == Pages(0, 1), "first partial collect failed");
-    Require(region.Protection(3) == PAGE_READONLY, "partial collect did not protect its view");
+    Require(region.Protection(0) == PAGE_READONLY, "partial collect did not protect its reported page");
+    Require(region.Protection(3) == PAGE_READWRITE, "partial collect protected an unreported page");
     region.Write(0, 3);
     region.Write(4, 4);
     Require(region.Collect(Collection::Armed) == Pages(0, 1), "armed collect lost a write or consumed fresh pages");
@@ -99,7 +100,7 @@ void CheckFresh() {
     Require(region.Collect(Collection::Fresh).empty(), "fresh collect repeated initial writes");
     Require(region.Collect(Collection::Armed) == Pages(0, 1), "fresh collect cleared an existing write");
     region.Write(9, 9);
-    Require(region.Collect(Collection::Armed) == Pages(8, 12), "write after activation was missed");
+    Require(region.Collect(Collection::Armed) == Pages(9, 10), "write after activation was missed or marked an untouched page");
 }
 
 void CheckAliasesAndCapacity() {
