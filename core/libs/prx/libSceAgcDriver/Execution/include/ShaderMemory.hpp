@@ -3,7 +3,7 @@
 
 #include "Recompiler.hpp"
 #include <array>
-#include <bitset>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -76,13 +76,46 @@ private:
     static constexpr std::size_t PageBytes = 4096;
     static constexpr std::size_t PageWords = PageBytes / sizeof(std::uint32_t);
 
+    class WordMask {
+    public:
+        [[nodiscard]] bool test(std::size_t index) const { return (bits[index / 64u] >> (index % 64u) & 1u) != 0u; }
+        void set(std::size_t index) { bits[index / 64u] |= std::uint64_t{1} << (index % 64u); }
+        void set() { bits.fill(~std::uint64_t{0}); }
+        void set(std::size_t first, std::size_t count) {
+            while (count != 0) {
+                const auto offset = first % 64u;
+                const auto words = count < 64u - offset ? count : 64u - offset;
+                bits[first / 64u] |= (~std::uint64_t{0} >> (64u - words)) << offset;
+                first += words;
+                count -= words;
+            }
+        }
+        void reset() { bits.fill(0u); }
+        [[nodiscard]] bool all() const {
+            for (const auto word : bits) if (word != ~std::uint64_t{0}) return false;
+            return true;
+        }
+        [[nodiscard]] bool none() const {
+            for (const auto word : bits) if (word != 0u) return false;
+            return true;
+        }
+        void Merge(const std::uint64_t* mask) {
+            for (std::size_t word = 0; word < bits.size(); ++word) bits[word] |= mask[word];
+        }
+        template<typename TRun>
+        void ForEachRun(TRun&& run) const;
+
+    private:
+        std::array<std::uint64_t, PageWords / 64u> bits{};
+    };
+
     struct Page {
         // Not zero-filled: only valid dwords are ever read (a fetch fills the whole page).
         Page() {}
         std::array<std::uint32_t, PageWords> words;
-        std::bitset<PageWords> valid;
-        std::bitset<PageWords> read;
-        std::bitset<PageWords> recent;
+        WordMask valid;
+        WordMask read;
+        WordMask recent;
         bool wordwise = false;
         // A page an image-table snapshot replayed (tableReplayPage): the dwords are the snapshot
         // memo's image, shared and never written (the page is valid whole), not `words`.

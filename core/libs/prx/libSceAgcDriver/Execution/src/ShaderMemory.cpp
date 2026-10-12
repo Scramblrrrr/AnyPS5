@@ -262,19 +262,8 @@ bool ShaderMemory::readWords(void* context, std::uint64_t address, std::uint32_t
         }
         if (page != nullptr && !page->wordwise && page->valid.all()) {
             std::memcpy(values, page->data() + index, bytes);
-            if (words < 64) {
-                for (std::size_t word = index; word < index + words; ++word) {
-                    page->read.set(word);
-                    page->recent.set(word);
-                }
-            } else {
-                std::bitset<PageWords> mask;
-                mask.set();
-                mask >>= PageWords - words;
-                mask <<= index;
-                page->read |= mask;
-                page->recent |= mask;
-            }
+            page->read.set(index, words);
+            page->recent.set(index, words);
             if (CaptureProfiled()) CaptureTotals().reads += words;
         } else {
             for (std::size_t word = 0; word < words; ++word) {
@@ -365,13 +354,13 @@ bool ShaderMemory::tableReplayPage(void* context, std::uint64_t base, const std:
         page->valid.set();
         ++CaptureTotals().pages;
     }
-    std::bitset<PageWords> bits;
-    for (std::size_t word = 0; word < PageWords / 64; ++word) {
-        if (mask[word] != 0) bits |= std::bitset<PageWords>(mask[word]) << (word * 64);
+    page->read.Merge(mask);
+    page->recent.Merge(mask);
+    if (CaptureProfiled()) {
+        std::size_t reads = 0;
+        for (std::size_t word = 0; word < PageWords / 64; ++word) reads += std::popcount(mask[word]);
+        CaptureTotals().reads += reads;
     }
-    page->read |= bits;
-    page->recent |= bits;
-    if (CaptureProfiled()) CaptureTotals().reads += bits.count();
     return true;
 }
 
@@ -443,6 +432,26 @@ std::shared_ptr<const ShaderRecompiler::ResourceCapture> ShaderMemory::capture(c
     return capture;
 }
 
+template<typename TRun>
+void ShaderMemory::WordMask::ForEachRun(TRun&& run) const {
+    constexpr std::size_t words = PageWords / 64u;
+    std::size_t index = 0;
+    while (index < PageWords) {
+        auto word = index / 64u;
+        auto set = bits[word] & (~std::uint64_t{0} << (index % 64u));
+        while (set == 0u) {
+            if (++word == words) return;
+            set = bits[word];
+        }
+        const auto first = word * 64u + static_cast<std::size_t>(std::countr_zero(set));
+        auto clear = ~bits[word] & (~std::uint64_t{0} << (first % 64u));
+        while (clear == 0u && ++word < words) clear = ~bits[word];
+        const auto end = word == words ? PageWords : word * 64u + static_cast<std::size_t>(std::countr_zero(clear));
+        run(first, end);
+        index = end;
+    }
+}
+
 std::vector<ShaderRecompiler::MemoryRegion> ShaderMemory::Regions() const {
     std::vector<ShaderRecompiler::MemoryRegion> result;
     result.reserve(initial.size() + pages.size());
@@ -453,15 +462,9 @@ std::vector<ShaderRecompiler::MemoryRegion> ShaderMemory::Regions() const {
             result.push_back({next->first, next->second});
             ++next;
         }
-        for (std::size_t index = 0; index < PageWords;) {
-            if (!page.read.test(index)) {
-                ++index;
-                continue;
-            }
-            const auto first = index;
-            while (index < PageWords && page.read.test(index)) ++index;
-            result.push_back({base + first * sizeof(std::uint32_t), std::as_bytes(std::span(page.data(), PageWords).subspan(first, index - first))});
-        }
+        page.read.ForEachRun([&](std::size_t first, std::size_t end) {
+            result.push_back({base + first * sizeof(std::uint32_t), std::as_bytes(std::span(page.data(), PageWords).subspan(first, end - first))});
+        });
     }
     for (; next != initial.end(); ++next) result.push_back({next->first, next->second});
     return result;
@@ -471,15 +474,9 @@ std::vector<ShaderRecompiler::MemoryRegion> ShaderMemory::TakeRecentRegions() {
     std::vector<ShaderRecompiler::MemoryRegion> result;
     for (auto& [base, page] : pages) {
         if (page.recent.none()) continue;
-        for (std::size_t index = 0; index < PageWords;) {
-            if (!page.recent.test(index)) {
-                ++index;
-                continue;
-            }
-            const auto first = index;
-            while (index < PageWords && page.recent.test(index)) ++index;
-            result.push_back({base + first * sizeof(std::uint32_t), std::as_bytes(std::span(page.data(), PageWords).subspan(first, index - first))});
-        }
+        page.recent.ForEachRun([&](std::size_t first, std::size_t end) {
+            result.push_back({base + first * sizeof(std::uint32_t), std::as_bytes(std::span(page.data(), PageWords).subspan(first, end - first))});
+        });
         page.recent.reset();
     }
     return result;

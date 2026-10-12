@@ -3343,6 +3343,46 @@ void verifyCubeDepthCompareMode() {
     require(modes[selected].cube && (modes[selected].emulatedCompare & EmulatedCompare::Enabled) != 0u, "cube color comparison did not select its emulated runtime mode");
 }
 
+void verifyCapturedRegionBoundaries() {
+    using namespace ShaderRecompiler;
+    const std::array<std::uint32_t, 8> code{0xf4040004u, 0xfa000000u, 0xf4000080u, 0xfa000000u, 0x7e000202u, 0xf80008cfu, 0u, 0xbf810000u};
+    alignas(4096) std::array<std::uint32_t, 1024> payload{};
+    alignas(4096) std::array<std::uint64_t, 8> tables{};
+    const std::array<std::size_t, 8> indices{0, 62, 63, 64, 65, 127, 128, 1023};
+    for (std::size_t i = 0; i < indices.size(); ++i) tables[i] = reinterpret_cast<std::uintptr_t>(&payload[indices[i]]);
+    const std::array<MemoryRegion, 1> initial{{{reinterpret_cast<std::uintptr_t>(tables.data()), std::as_bytes(std::span(tables))}}};
+    AgcDriver::ShaderMemory memory(initial);
+    RecompileRequest request{};
+    request.shader = {ShaderStage::Vertex, 0x10000u, code, 0, {}};
+    request.target = BufferTarget();
+    request.context.waveSize = 64;
+    request.context.userDataBaseRegister = 8;
+    request.context.vertex = ShaderVertexStageInfo{};
+    std::array<std::uint32_t, 2> userData{};
+    const auto capture = [&](std::size_t index) {
+        const auto address = reinterpret_cast<std::uintptr_t>(&tables[index]);
+        userData = {static_cast<std::uint32_t>(address), static_cast<std::uint32_t>(address >> 32u)};
+        request.context.userData = userData;
+        require(memory.Capture(request) != nullptr, "capture region boundaries: capture failed");
+    };
+    for (std::size_t i = 0; i < indices.size(); ++i) capture(i);
+    const auto base = reinterpret_cast<std::uintptr_t>(payload.data());
+    const auto payloadRanges = [&](const auto& regions) {
+        std::vector<std::pair<std::uint64_t, std::size_t>> ranges;
+        for (const auto& region : regions) {
+            if (region.guestAddress >= base && region.guestAddress < base + sizeof(payload)) ranges.emplace_back(region.guestAddress, region.bytes.size());
+        }
+        return ranges;
+    };
+    const std::vector<std::pair<std::uint64_t, std::size_t>> expected{{base, 4}, {base + 62 * 4, 16}, {base + 127 * 4, 8}, {base + 1023 * 4, 4}};
+    require(payloadRanges(memory.Regions()) == expected, "capture region boundaries: sparse union lost or widened reads");
+    require(payloadRanges(memory.TakeRecentRegions()) == expected, "capture region boundaries: recent reads differ from the union");
+    require(memory.TakeRecentRegions().empty(), "capture region boundaries: recent reads did not reset");
+    capture(2);
+    require(payloadRanges(memory.TakeRecentRegions()) == std::vector<std::pair<std::uint64_t, std::size_t>>{{base + 63 * 4, 4}}, "capture region boundaries: a repeated read included earlier reads");
+    require(payloadRanges(memory.Regions()) == expected, "capture region boundaries: resetting recent reads changed the union");
+}
+
 int main(int argc, char** argv) {
     try {
         using namespace ShaderRecompiler;
@@ -3361,6 +3401,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         require(argc == 1, "unknown shader memory test arguments");
+        verifyCapturedRegionBoundaries();
         verifyRegisterSources();
         verifyEvaluatedValues();
         verifyFrontendPair();
