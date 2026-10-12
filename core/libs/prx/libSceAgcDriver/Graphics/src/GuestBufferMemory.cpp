@@ -2378,7 +2378,20 @@ bool GuestBufferMemory::bindSparseMirror(Region& region, const GuestAllocations:
     const auto backedEnd = region.backed.empty() ? region.begin : region.backed.back().second;
     const auto neededEnd = std::min(region.end, std::max(backedEnd, std::max(region.lastView, region.begin) + 4u));
     const auto* range = containingRange(lease, region.begin, neededEnd);
-    if (range == nullptr || !range->releasable) return false;
+    if (range == nullptr || !range->releasable) {
+        static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+        static std::atomic<std::uint32_t> reported{0};
+        if (profile && reported.fetch_add(1, std::memory_order_relaxed) < 8u) {
+            const auto found = std::upper_bound(lease.begin(), lease.end(), region.begin, [](std::uint64_t value, const auto& item) { return value < item->address; });
+            const auto* nearest = found == lease.begin() ? nullptr : std::prev(found)->get();
+            AgcDriver::ProfilePrint_nid_no_patch("[sparse-mirror] rejected 0x%llx+0x%llx, needed end 0x%llx: %s; preceding registry range 0x%llx+0x%llx readable=%d releasable=%d, %zu leased ranges\n",
+                static_cast<unsigned long long>(region.begin), static_cast<unsigned long long>(region.end - region.begin), static_cast<unsigned long long>(neededEnd),
+                range == nullptr ? "no containing readable range" : "range is not releasable",
+                static_cast<unsigned long long>(nearest != nullptr ? nearest->address : 0u), static_cast<unsigned long long>(nearest != nullptr ? nearest->bytes : 0u),
+                nearest != nullptr && nearest->readable ? 1 : 0, nearest != nullptr && nearest->releasable ? 1 : 0, lease.size());
+        }
+        return false;
+    }
     std::vector<RefreshBlock> blocks;
     std::shared_ptr<ImageMirror> mirror;
     try {
