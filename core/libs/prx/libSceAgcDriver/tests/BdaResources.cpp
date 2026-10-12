@@ -532,8 +532,8 @@ void heapMirrorTests(const Context& context, const BdaTestAccess& access) {
     }
 #endif
     {
-        constexpr std::size_t large = 36 * 65536;
-        constexpr std::size_t small = 17 * 65536;
+        constexpr std::size_t large = 144 * 65536;
+        constexpr std::size_t small = 68 * 65536;
         constexpr std::size_t total = 2 * large + small;
         void* raw = GuestArena::GuestArenaAllocate_nid_postfix(total, 65536);
 #ifdef _WIN32
@@ -842,7 +842,7 @@ void sparseHeapMirrorTests(const Context& context, const BdaTestAccess& access) 
         guest[24] = 0x55;
     });
     const auto made = MirrorCounters();
-    Require(made.heapMirrors == before.heapMirrors + 1 && made.heapBytes == before.heapBytes + extent && made.rebuilds == before.rebuilds + 1 && made.sparseBinds == before.sparseBinds + 1, "a sparse heap was not mirrored once");
+    Require(made.heapMirrors == before.heapMirrors + 1 && made.heapBytes == before.heapBytes + 2 * extent && made.rebuilds == before.rebuilds + 1 && made.sparseBinds == before.sparseBinds + 1, "a sparse heap and its writable shadow were not mirrored once");
     Require(guest[8] == 0x77 && guest[24] == 0x55, "a sparse heap mirror's write-back lost the GPU's store or rolled back the CPU's");
     const auto second = bind(false, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
         Require(bytes[view.offset + 8] == std::byte{0x77} && bytes[view.offset + 24] == std::byte{0x55}, "the sparse heap mirror missed the stores");
@@ -914,12 +914,33 @@ void sparseHeapMirrorTests(const Context& context, const BdaTestAccess& access) 
             guest[piece + 24] = 0x55;
         });
         const auto madeSplit = MirrorCounters();
-        Require(madeSplit.rebuilds == start.rebuilds + 1 && madeSplit.sparseBinds == start.sparseBinds + 1 && madeSplit.heapBytes == start.heapBytes + 2 * piece, "split heap was copied instead of mirrored");
+        Require(madeSplit.rebuilds == start.rebuilds + 1 && madeSplit.sparseBinds == start.sparseBinds + 1 && madeSplit.heapBytes == start.heapBytes + 4 * piece, "split heap and its writable shadow were copied instead of mirrored");
         Require(guest[piece + 8] == 0x77 && guest[piece + 24] == 0x55, "split mirror write-back rolled back a CPU write or lost a GPU write");
         const auto secondSplit = bind(false, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
             Require(bytes[view.offset + piece + 8] == std::byte{0x77} && bytes[view.offset + piece + 24] == std::byte{0x55}, "split mirror missed its second range's writes");
         });
         Require(secondSplit.buffer == firstSplit.buffer && MirrorCounters().rebuilds == madeSplit.rebuilds, "split mirror was rebuilt on reuse");
+        {
+            GuestBufferMemory first(context);
+            GuestBufferMemory second(context);
+            first.AddWritable(base, reserved);
+            second.AddWritable(base, reserved);
+            first.Upload(false);
+            second.Upload(false);
+            std::uint32_t adjustment = 0;
+            const auto firstView = first.Descriptor(base, reserved, adjustment);
+            const auto secondView = second.Descriptor(base, reserved, adjustment);
+            Require(firstView.buffer == secondView.buffer, "overlapping builds did not share the split mirror");
+            const auto bytes = access.bytes(firstView.buffer);
+            bytes[firstView.offset + piece + 48] = std::byte{0x71};
+            first.WriteBack();
+            Require(guest[piece + 48] == 0x71, "first overlapping mirror write was lost");
+            guest[piece + 49] = 0x72;
+            bytes[secondView.offset + piece + 48] = std::byte{0x42};
+            bytes[secondView.offset + piece + 50] = std::byte{0x73};
+            second.WriteBack();
+            Require(guest[piece + 48] == 0x42 && guest[piece + 49] == 0x72 && guest[piece + 50] == 0x73, "overlapping mirror write-back lost a reverted GPU value or rolled back a CPU write");
+        }
         guest[piece + 33] = 0x66;
         bind(false, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
             Require(view.buffer == firstSplit.buffer && bytes[view.offset + piece + 33] == std::byte{0x66}, "split mirror missed a subsequent CPU write");
