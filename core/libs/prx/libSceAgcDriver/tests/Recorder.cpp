@@ -2772,19 +2772,19 @@ void imageMemoryRecoveryTests(const Device& device) {
     };
     try {
         ImageAllocationFailuresForTest().store(1);
-        auto recovered = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+        auto recovered = StorageTexture::Create(context, detiler, resource, 0);
         Require(recovered->AllocationBytes() != 0 && ImageAllocationFailuresForTest().load() == 0, "an image allocation that failed once was not retried after the pool trim");
         recovered.reset();
         ImageAllocationFailuresForTest().store(2);
         bool typed = false;
         try {
-            static_cast<void>(std::make_shared<StorageTexture>(context, detiler, resource, 0));
+            static_cast<void>(StorageTexture::Create(context, detiler, resource, 0));
         } catch (const OutOfDeviceMemory&) {
             typed = true;
         }
         Require(typed, "an image allocation whose retry failed did not throw OutOfDeviceMemory");
         Require(ImageAllocationFailuresForTest().load() == 0, "an image allocation retried more than once");
-        auto again = std::make_shared<StorageTexture>(context, detiler, resource, 0);
+        auto again = StorageTexture::Create(context, detiler, resource, 0);
         Require(again->AllocationBytes() != 0, "an image allocation failed after recovered out-of-memory results");
     } catch (...) {
         release();
@@ -3805,10 +3805,6 @@ void storageUploadLifetimeTests(const Device& device, Recorder& previous, bool f
     {
         Recorder recorder(context);
         recorder.Activate();
-        if (argc == 2 && std::string_view(argv[1]) == "--image-memory-recovery-only") {
-            imageMemoryRecoveryTests(device);
-            return 0;
-        }
         try {
             auto image = StorageTexture::Create(context, detiler, resource, 0);
             lifetime = image;
@@ -4979,7 +4975,7 @@ bool uncachedSnapshotReuseTests(const Device& device, Recorder& recorder) {
         auto afterClear = CachedSampledTexture(context, secondWords);
         Require(afterClear != uncached, "uncached snapshots: clearing the device cache reused a refused snapshot");
         second[0] = 0x33;
-        CollectWritesUncached(reinterpret_cast<std::uint64_t>(second), surfaceBytes);
+        AgcDriver::GuestMemory::CollectWritesUncached(reinterpret_cast<std::uint64_t>(second), surfaceBytes);
         auto changed = CachedSampledTexture(context, secondWords);
         Require(changed != afterClear, "uncached snapshots: a CPU write reused stale snapshot contents");
         changed.reset();
@@ -6400,6 +6396,10 @@ int main(int argc, char** argv) {
         std::cout << "host imports " << (PrepareImportWatch(device.GetContext()) == ImportWatch::Unwatch ? "are compared" : "stay watched") << '\n';
         Recorder recorder(device.GetContext());
         recorder.Activate();
+        if (argc == 2 && std::string_view(argv[1]) == "--image-memory-recovery-only") {
+            imageMemoryRecoveryTests(device);
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--uncached-snapshot-only") {
             if (!uncachedSnapshotReuseTests(device, recorder)) return 77;
             return 0;
