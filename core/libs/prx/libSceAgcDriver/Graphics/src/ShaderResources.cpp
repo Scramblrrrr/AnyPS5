@@ -2463,7 +2463,7 @@ bool ShaderResources::lookUpUnrecorded(std::span<const CompiledShader> shaders, 
         const auto& log = lookupLog();
         for (auto it = log.rbegin(); it != log.rend(); ++it) {
             if (it->object != textures[index].get()) continue;
-            validatedTextures[index] = {it->resource, it->bytes, it->keys, it->generation, 0, it->source, true};
+            validatedTextures[index] = {it->resource, it->bytes, it->keys, it->generation, 0, it->source, it->depth, true};
             break;
         }
     }
