@@ -201,6 +201,7 @@ struct RetiredImport {
 #ifdef _WIN32
         GuestArena::GuestArenaUnmapAlias_nid_postfix(entry.alias);
 #endif
+        CountGpuMemory(GpuMemoryKind::HostImport, -static_cast<std::int64_t>(entry.bytes));
     }
     VkDevice device;
     PFN_vkDestroyBuffer destroyBuffer;
@@ -865,7 +866,7 @@ void refreshImports(const Context& context, HostImports& state, const GuestAlloc
 #ifdef _WIN32
             GuestArena::GuestArenaUnmapAlias_nid_postfix(node.mapped().alias);
 #endif
-            CountGpuMemory(GpuMemoryKind::HostImport, -static_cast<std::int64_t>(entry.bytes));
+            CountGpuMemory(GpuMemoryKind::HostImport, -static_cast<std::int64_t>(node.mapped().bytes));
         }
         state.liveBytes = 0;
         state.failed.clear();
