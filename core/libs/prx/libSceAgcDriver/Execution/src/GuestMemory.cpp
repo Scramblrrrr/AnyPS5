@@ -1118,6 +1118,9 @@ bool walkWrites(WriteTracker& tracker, std::uint64_t first, std::uint64_t stop, 
 
 std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoized) {
     if (bytes == 0 || bytes > std::numeric_limits<std::uint64_t>::max() - address) return 0;
+#ifdef _WIN32
+    if (GuestArena::GuestArenaHostRegionOverlaps_nid_postfix(address, bytes)) return 0;
+#endif
     auto& tracker = Tracker();
     // Whole pages, so a page shared with the next range is collected with either.
     constexpr std::uint64_t page = 4096;
