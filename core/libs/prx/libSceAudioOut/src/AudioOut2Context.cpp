@@ -217,8 +217,21 @@ static void Render(AudioOut2Context& context, const AudioOut2Grain& grain) {
 }
 
 static void DeviceCallback(void* userdata, Uint8* stream, int length) {
+    const bool trace = AudioOut2TraceEnabled();
+    const auto entered = trace ? Clock::now() : Clock::time_point{};
     auto& context = *static_cast<AudioOut2Context*>(userdata);
     std::lock_guard lock(context.lock);
+    if (trace) {
+        const auto acquired = Clock::now();
+        context.summaryCallbackLockMs = std::max(context.summaryCallbackLockMs, std::chrono::duration<double, std::milli>(acquired - entered).count());
+        if (context.lastCallbackStart != Clock::time_point{}) {
+            const auto gap = std::chrono::duration<double, std::milli>(entered - context.lastCallbackStart).count();
+            context.summaryCallbackGapMs = std::max(context.summaryCallbackGapMs, gap);
+            if (gap > 50.0) ++context.lateCallbacks;
+        }
+        context.lastCallbackStart = entered;
+        ++context.summaryCallbacks;
+    }
     auto* out = reinterpret_cast<float*>(stream);
     const auto samples = static_cast<std::size_t>(length) / sizeof(float);
     const auto cushionSamples = static_cast<std::size_t>(CushionGrains(context)) * context.grain * AUDIO_OUT2_OUTPUT_CHANNELS;
@@ -247,6 +260,12 @@ static void TraceSummary(AudioOut2Context& context, Clock::time_point now) {
         static_cast<unsigned long long>(context.pushes), static_cast<unsigned long long>(context.blockingPushes), static_cast<unsigned long long>(context.fullRejects),
         static_cast<unsigned long long>(context.primes), static_cast<unsigned long long>(context.dropped));
     context.summaryStart = now;
+    std::fprintf(stderr, "[audioout2-callback] t=%.3f ctx %p: %.1f calls/s, max start gap %.2f ms, max context-lock wait %.2f ms; total start gaps over 50 ms %llu\n",
+        AudioOut2TraceSeconds(), static_cast<void*>(&context), static_cast<double>(context.summaryCallbacks) / elapsed,
+        context.summaryCallbackGapMs, context.summaryCallbackLockMs, static_cast<unsigned long long>(context.lateCallbacks));
+    context.summaryCallbacks = 0;
+    context.summaryCallbackGapMs = 0.0;
+    context.summaryCallbackLockMs = 0.0;
     context.summaryPushes = 0;
     context.summaryAdvances = 0;
     context.summaryPolls = 0;
