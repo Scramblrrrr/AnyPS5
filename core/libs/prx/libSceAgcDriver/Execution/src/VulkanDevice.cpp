@@ -3252,6 +3252,8 @@ struct RecordedDispatch {
     // Whether the data refresh recorded anything.
     bool refreshed = false;
     bool resourceKeyMatched = false;
+    std::uint64_t originalArguments = 0;
+    int argumentCpuReason = 0;
 };
 
 VkDevice VulkanDevice::Device() const {
@@ -3631,6 +3633,8 @@ void VulkanDevice::recordDispatch(RecordedDispatch& record) {
         if (record.x <= limit[0] && record.y <= limit[1] && record.z <= limit[2]) {
             context.Resolved(&Graphics::DeviceFunctions::cmdDispatch, "vkCmdDispatch")(commands, record.x, record.y, record.z);
         } else {
+            static const bool traceBadDispatch = std::getenv("APS5_TRACE_BAD_DISPATCH") != nullptr;
+            if (traceBadDispatch) std::fprintf(stderr, "[dispatch-limit] program 0x%llx groups %ux%ux%u original arguments 0x%llx CPU reason %d resource-key-matched %d\n", static_cast<unsigned long long>(record.programAddress), record.x, record.y, record.z, static_cast<unsigned long long>(record.originalArguments), record.argumentCpuReason, record.resourceKeyMatched ? 1 : 0);
             if (record.shader->program->workgroupMemoryDwords != 0) {
                 char text[256];
                 std::snprintf(text, sizeof(text), "Vulkan dispatch: workgroup count %ux%ux%u exceeds device limits %ux%ux%u and a split aliases the device-memory LDS slots, whose base is computed from gl_NumWorkGroups of a single chunk", record.x, record.y, record.z, limit[0], limit[1], limit[2]);
@@ -3923,6 +3927,8 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
     RecordedDispatch record{&context, &shaders[0], resources, objects, pushStages, &pushBytes, x, y, z, arguments, nullptr, programAddress, fromCache && TemplateDataRefresh() ? RecordedDispatch::DataRefresh::Words : RecordedDispatch::DataRefresh::None, 0, revalidateMs, &timer};
     record.resourceKeyMatched = fromCache;
     if (arguments != 0) decideIndirect(record, outcome, groupsText);
+    record.originalArguments = arguments;
+    record.argumentCpuReason = outcome.cpuReason;
     // The indirect hold total below still covers the whole call of a CPU-resolved one.
     const bool indirect = record.arguments != 0 || outcome.cpuReason != 0;
     recordDispatch(record);
@@ -4091,6 +4097,8 @@ RecipeOutcome VulkanDevice::DispatchRecipe(const ShaderRecompiler::RecompileResu
     RecordedDispatch record{&context, &shaders[0], hit->resources, hit->objects, recipe.pushes ? VkShaderStageFlags{VK_SHADER_STAGE_COMPUTE_BIT} : VkShaderStageFlags{0}, &recipe.pushBytes, x, y, z, arguments, nullptr, programAddress, dataRefresh, recipe.dataWordsHash, 0, &timer};
     record.resourceKeyMatched = verify != nullptr;
     if (arguments != 0) decideIndirect(record, outcome, groupsText);
+    record.originalArguments = arguments;
+    record.argumentCpuReason = outcome.cpuReason;
     const bool indirect = record.arguments != 0 || outcome.cpuReason != 0;
     const auto recordStart = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     recordDispatch(record);
