@@ -436,7 +436,7 @@ void ReclaimSlabs() {
     Expect(mock.liveBytes == 0, "spare slab recovery leaked device memory");
 }
 
-void HostAllocationFallback(VkResult initial, VkResult final, std::uint32_t allowedTypes, std::uint32_t alternateHeap, VkMemoryPropertyFlags alternateFlags, bool expected, bool cached = false) {
+void HostAllocationFallback(VkResult initial, VkResult final, std::uint32_t allowedTypes, std::uint32_t alternateHeap, VkMemoryPropertyFlags alternateFlags, bool expected, bool cached = false, VkMemoryPropertyFlags requestedProperties = HostVisible) {
     mock = MockDevice{};
     mock.allowedTypes = allowedTypes;
     {
@@ -449,11 +449,11 @@ void HostAllocationFallback(VkResult initial, VkResult final, std::uint32_t allo
         if (cached) mock.results = {initial, initial, final};
         const auto before = mock.attempts;
         const bool oom = initial == VK_ERROR_OUT_OF_DEVICE_MEMORY || initial == VK_ERROR_OUT_OF_HOST_MEMORY;
-        const bool alternate = oom && (allowedTypes & 4u) != 0u && alternateHeap != 1u && (alternateFlags & HostVisible) == HostVisible;
+        const bool alternate = oom && requestedProperties == HostVisible && (allowedTypes & 4u) != 0u && alternateHeap != 1u && (alternateFlags & HostVisible) == HostVisible;
         bool succeeded = false;
         std::string failure;
         try {
-            Buffer buffer(context, 4 * MiB, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+            Buffer buffer(context, 4 * MiB, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, requestedProperties);
             succeeded = true;
             Expect(mock.attemptedTypes.back() == 2u, "host fallback did not select the alternate heap");
             Expect((mock.lastFlags & VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT) != 0u, "host fallback lost device-address allocation flags");
@@ -557,6 +557,7 @@ int main() {
         HostAllocationFallback(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_SUCCESS, 3u, 0u, HostVisible, false);
         HostAllocationFallback(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_SUCCESS, 7u, 1u, HostVisible, false);
         HostAllocationFallback(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_SUCCESS, 7u, 0u, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, false);
+        HostAllocationFallback(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_SUCCESS, 7u, 0u, HostVisible, false, false, HostVisible | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: %s\n", error.what());
         return 1;
