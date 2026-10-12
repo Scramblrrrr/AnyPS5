@@ -126,8 +126,6 @@ struct TextureCache {
     std::chrono::steady_clock::time_point passedSince{};
     std::uint64_t firstUsesPresent = 0;
     std::unordered_set<TextureKey, TextureKeyHash> firstUses;
-    // Snapshots handed out uncached (admitTexture refused them), by key: a later lookup of the same
-    // unchanged surface reuses the live texture instead of uploading a duplicate image.
     struct UncachedSnapshot {
         std::weak_ptr<Texture> texture;
         std::uint64_t generation = 0;
@@ -211,8 +209,6 @@ void eraseTexture(TextureCache& cache, std::list<CachedTexture>::iterator it) {
     ++cache.erasures;
 }
 
-// Out-of-memory recovery: erases the entries nothing but the cache references (no resource object,
-// view or recorded batch holds their texture); returns the bytes they accounted.
 std::uint64_t releaseUnreferenced(TextureCache& cache) {
     std::uint64_t released = 0;
     for (auto it = cache.entries.begin(); it != cache.entries.end();) {

@@ -843,6 +843,12 @@ if(BUILD_TESTING)
     add_test(NAME agc_copied_direct_ordering COMMAND agc_driver_recorder_tests --copied-direct-only)
     set_tests_properties(agc_copied_direct_ordering PROPERTIES TIMEOUT 30)
     add_test(NAME agc_storage_written_buffer_order COMMAND agc_driver_recorder_tests --written-buffer-order-only)
+    add_test(NAME agc_image_memory_recovery COMMAND agc_driver_recorder_tests --image-memory-recovery-only)
+    set_tests_properties(agc_image_memory_recovery PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(agc_image_memory_recovery PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     set_tests_properties(agc_storage_written_buffer_order PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
     if(WIN32)
         set_tests_properties(agc_storage_written_buffer_order PROPERTIES ENVIRONMENT_MODIFICATION

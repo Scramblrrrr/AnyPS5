@@ -119,6 +119,12 @@ Set `APS5_THREAD_PRIORITY=high` to raise the AGC driver's queue workers and the 
 
 The shader recompilation logic in [core/shader/recompiler](../../core/shader/recompiler) is isolated from the rest of the project and is a pure function of its input data, designed for integration into any other project. The current CMake target also includes cache support and links a supplied runtime target, glslang, and optionally SPIRV-Tools.
 
+## Texture allocation recovery
+
+Sampled and storage image allocations retry once after trimming retained buffer-pool allocations when Vulkan reports out-of-memory. If the retry also fails, the relevant texture cache releases entries that no recorded batch, resource set or view references and retries creation once more. Allocation and release counters retain the image's memory kind. Storage images still use their factory to perform upload and register their live views.
+
+Snapshots refused by the sampled-texture cache are remembered weakly. Reuse requires a live image and the same guest range, unchanged write generation and matching DCC keys; remembering an image does not keep it alive. The `agc_image_memory_recovery` test injects allocation failures to check one retry, typed exhaustion and recovery after exhaustion. This injection is test-only and does not change the normal game configuration.
+
 ## Register context tests
 
 The x86-64 register capture and restore tests can be built separately on Linux and macOS, without submodules or the prx libraries. On macOS:

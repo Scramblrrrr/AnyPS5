@@ -2735,9 +2735,6 @@ void unitShadowTests(const Device& device, Recorder& recorder) {
     Require(words[127 * unit] == 0x66 && words[128 * unit] == 0x77, "the retire did not publish the second slab's units covered by the old registration");
 }
 
-// An image allocation that runs out of device memory trims the buffer pool and tries once more; a
-// retry that fails too throws OutOfDeviceMemory, the type the texture caches catch to release
-// their unreferenced entries and build again.
 void imageMemoryRecoveryTests(const Device& device) {
     const auto& base = device.GetContext();
     constexpr std::uint32_t side = 64;
@@ -3808,6 +3805,10 @@ void storageUploadLifetimeTests(const Device& device, Recorder& previous, bool f
     {
         Recorder recorder(context);
         recorder.Activate();
+        if (argc == 2 && std::string_view(argv[1]) == "--image-memory-recovery-only") {
+            imageMemoryRecoveryTests(device);
+            return 0;
+        }
         try {
             auto image = StorageTexture::Create(context, detiler, resource, 0);
             lifetime = image;
