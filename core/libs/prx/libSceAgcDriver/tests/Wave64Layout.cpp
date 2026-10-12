@@ -1,5 +1,7 @@
 #include "Recompiler.hpp"
 #include "BdaAbi.hpp"
+#include "IntermediateRepresentation/IrBuilder.hpp"
+#include "SpirvBackend/SpirvAnalysis.hpp"
 #include <spirv/unified1/spirv.hpp>
 #include <array>
 #include <cstdint>
@@ -53,6 +55,30 @@ void Expect(const char* name, std::uint32_t lanes, std::uint32_t expected) {
     if (lanes != expected) throw std::runtime_error(std::string(name) + ": host subgroup size " + std::to_string(lanes) + ", expected " + std::to_string(expected));
 }
 
+bool RejectOtherHalfBit(std::uint32_t word) {
+    IrProgram program;
+    program.Resources().stage = IrShaderStage::Compute;
+    program.SetWaveSize(64u);
+    auto& block = program.CreateBlock();
+    program.SetEntryBlock(block);
+    program.BlockOrder().push_back(&block);
+    IrBuilder builder(program);
+    builder.SetInsertionPoint(block);
+    auto& lane = builder.Emit(IrOpcode::LaneId, IrType::U32, {}, 0u);
+    auto& predicate = word == 0u ? builder.ULessThan(lane, builder.Constant(32u)) : builder.UGreaterThan(lane, builder.Constant(31u));
+    auto& ballot = builder.Emit(IrOpcode::Ballot, IrType::U32x4, {&predicate}, 0u);
+    auto& mask = builder.CompositeExtract(ballot, word);
+    auto& bit = builder.BitwiseAnd(lane, builder.Constant(31u));
+    auto& shifted = builder.ShiftRightLogical(mask, bit);
+    static_cast<void>(builder.BitwiseAnd(shifted, builder.Constant(1u)));
+    const auto rejection = Wave64OneLaneRejection(program, 64u, {});
+    if (rejection != OneLaneRejection::WaveOperation) {
+        std::cerr << "cross-half ballot word " << word << " admitted: " << OneLaneRejectionName(rejection) << '\n';
+        return false;
+    }
+    return true;
+}
+
 }
 
 int main() {
@@ -64,6 +90,10 @@ int main() {
         Expect("execz region with vector work only", HostLanes({0x7d880085u, 0xbe8a246au, 0xbf880001u, 0x4a040481u, 0x88fe0a7eu}, 64u, 0u), 64u);
         Expect("LDS in a one-wave workgroup", HostLanes({0xd8340000u, 0x00000201u, 0xbf8cc07fu, 0xd8d80000u, 0x02000001u, 0xbf8cc07fu}, 64u, 64u), 64u);
         Expect("LDS writes in a two-wave workgroup", HostLanes({0xd8340000u, 0x00000201u, 0xbf8cc07fu, 0xd8d80000u, 0x02000001u, 0xbf8cc07fu}, 128u, 128u), 32u);
+        std::puts("original seven wave64 layout checks passed");
+        const bool low = RejectOtherHalfBit(0u);
+        const bool high = RejectOtherHalfBit(1u);
+        if (!low || !high) throw std::runtime_error("cross-half ballot admission checks failed");
         std::puts("wave64 layout tests passed");
         return 0;
     } catch (const std::exception& error) {
