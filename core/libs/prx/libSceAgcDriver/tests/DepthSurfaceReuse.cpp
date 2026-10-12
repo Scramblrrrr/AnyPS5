@@ -167,6 +167,8 @@ void RunDepthSurfaceReuseTests() {
     constexpr std::uint64_t depth16 = 0x50000000;
     constexpr std::uint64_t depthStencil = 0x60000000;
     constexpr std::uint64_t stencil = 0x60800000;
+    Require(lookup(context, {depth32, FormatR32Float, 384, 384}) == nullptr, "an address without a depth surface must miss");
+    Require(lookup(context, {stencil, FormatR8Uint, 320, 180}) == nullptr, "an address without a stencil plane must miss");
     DepthSurfaceView(context, {depth32, 0, {384, 384}, VK_FORMAT_D32_SFLOAT, 1.0f, 0});
     DepthSurfaceView(context, {depth16, 0, {256, 256}, VK_FORMAT_D16_UNORM, 1.0f, 0});
     DepthSurfaceView(context, {depthStencil, stencil, {320, 180}, VK_FORMAT_D32_SFLOAT_S8_UINT, 1.0f, 0});
@@ -198,6 +200,7 @@ void RunDepthSurfaceReuseTests() {
     auto otherDevice = context;
     static int otherDeviceTag = 0;
     otherDevice.device = reinterpret_cast<VkDevice>(&otherDeviceTag);
+    Require(lookup(otherDevice, {depth32, FormatR32Float, 384, 384}) == nullptr, "a depth surface on another device must not satisfy a sampled lookup");
     Require(!storageAliasesDepth(otherDevice, {depth32, FormatR32Float, 384, 384}), "a depth surface on another device must not block a storage lookup");
 
     constexpr std::uint64_t stencil16 = 0x60000000;
@@ -207,5 +210,10 @@ void RunDepthSurfaceReuseTests() {
     Require(storageAliasesDepth(context, {stencil16, FormatR8Uint, 128, 128}), "storage access to the actual stencil plane must remain rejected");
     Require(!storageAliasesDepth(context, {stencil16, FormatR11G11B10Float, 128, 128}), "a stencil address reused for color is not a stencil storage alias");
 
+    ClearDepthSurfaces(context.device);
+    Require(lookup(context, {depth32, FormatR32Float, 384, 384}) == nullptr, "cleared depth surfaces must not satisfy a sampled lookup");
+    Require(lookup(context, {stencil, FormatR8Uint, 320, 180}) == nullptr, "cleared stencil planes must not satisfy a sampled lookup");
+    DepthSurfaceView(context, {depth32, 0, {384, 384}, VK_FORMAT_D32_SFLOAT, 1.0f, 0});
+    Require(lookup(context, {depth32, FormatR32Float, 384, 384}) != nullptr, "a rebound depth surface must be found after a clear and a miss");
     ClearDepthSurfaces(context.device);
 }
