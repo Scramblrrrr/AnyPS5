@@ -151,6 +151,7 @@ struct HostImports {
     PFN_vkDestroyBuffer destroyBuffer = nullptr;
     PFN_vkFreeMemory freeMemory = nullptr;
     std::map<std::uint64_t, HostImport> imports;
+    std::vector<std::pair<std::shared_ptr<void>, bool>> retired;
     std::uint64_t liveBytes = 0;
     std::set<std::uint64_t> failed;
     std::set<std::uint64_t> unaliasedSpans;
@@ -212,6 +213,17 @@ struct RetiredImport {
 const GuestAllocations::Range* containingRange(const GuestAllocations::Lease& lease, std::uint64_t begin, std::uint64_t end);
 bool runCovers(const GuestAllocations::Lease& lease, std::uint64_t begin, std::uint64_t end);
 
+void releaseRetired(HostImports& state) {
+    if (state.retired.empty() || !GuestMemory::GpuMutex().HeldByThisThread()) return;
+    if (auto* recorder = Recorder::Active(); recorder != nullptr) {
+        for (auto& [holder, hold] : state.retired) {
+            if (hold) recorder->KeepThroughHold(std::move(holder));
+            else if (!recorder->Idle()) recorder->Keep(std::move(holder));
+        }
+    }
+    state.retired.clear();
+}
+
 void retireImport(VkDevice device, HostImports& state, std::map<std::uint64_t, HostImport>::iterator it, const GuestAllocations::Lease& lease, bool hold = true) {
     // Results shadowed for the import reach its (old) buffer first where the memory is still a
     // readable registered range (the import retires because its registration vanished or changed
@@ -220,6 +232,11 @@ void retireImport(VkDevice device, HostImports& state, std::map<std::uint64_t, H
     ++state.epoch;
     state.liveBytes -= it->second.bytes;
     auto holder = std::make_shared<RetiredImport>(state.device, state.destroyBuffer, state.freeMemory, state.imports.extract(it));
+    if (!GuestMemory::GpuMutex().HeldByThisThread()) {
+        state.retired.emplace_back(std::move(holder), hold);
+        return;
+    }
+    releaseRetired(state);
     auto* recorder = Recorder::Active();
     if (recorder == nullptr) return;
     if (hold) recorder->KeepThroughHold(std::move(holder));
@@ -697,6 +714,7 @@ const HostImport* findImport(HostImports& state, std::uint64_t begin, std::uint6
 bool importsStale(const Context& context, const HostImports& state);
 
 const HostImport* importAllocation(const Context& context, HostImports& state, std::uint64_t address, const GuestAllocations::Lease& lease, std::uint64_t end = 0, bool evict = true) {
+    releaseRetired(state);
     const bool fresh = !importsStale(context, state);
     if (fresh && end != 0) {
         if (const auto* current = findImport(state, address, end)) return current;
@@ -868,6 +886,7 @@ void refreshImports(const Context& context, HostImports& state, const GuestAlloc
 #endif
             CountGpuMemory(GpuMemoryKind::HostImport, -static_cast<std::int64_t>(node.mapped().bytes));
         }
+        state.retired.clear();
         state.liveBytes = 0;
         state.failed.clear();
         state.device = context.device;
@@ -1879,6 +1898,7 @@ void ClearHostImports(VkDevice device) {
         CountGpuMemory(GpuMemoryKind::HostImport, -static_cast<std::int64_t>(entry.bytes));
     }
     state.imports.clear();
+    state.retired.clear();
     state.liveBytes = 0;
     state.failed.clear();
     state.device = VK_NULL_HANDLE;
@@ -2095,6 +2115,7 @@ const HostImport* HostImportFor(const Context& context, std::uint64_t address, s
     ensurePinWaiter();
     auto& state = Imports();
     std::lock_guard lock(state.mutex);
+    releaseRetired(state);
     // A hit is only valid while the registry has not changed since the imports were reconciled.
     if (!importsStale(context, state)) {
         if (const auto* entry = findImport(state, address, address + bytes)) {
