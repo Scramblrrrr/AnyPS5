@@ -1,6 +1,7 @@
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/UnitShadow.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "VulkanTestDevice.hpp"
 #ifdef _WIN32
@@ -113,6 +114,7 @@ int main() {
 #endif
         auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
+        const auto lostBefore = AgcDriver::Graphics::ShadowUnitsLostOnRetire();
         GuestAllocation first;
         Import(*device, first.Ranges());
         const bool importedFirst = Imported(device->Device(), first.Address(), AllocationBytes);
@@ -208,10 +210,12 @@ int main() {
             Require(device->FillBuffer(probe.Address(), BlockBytes, pattern), "host import at map: the fill that keeps the recorder busy was not imported");
         }
         GuestAllocations::Mutation().Add(window + HalfBytes, HalfBytes, true, true, true);
-        Require(!device->ImportGuestMemory(mappedAt(window + HalfBytes), GuestAllocations::GuestAllocationsGeneration_nid_postfix(), false), "host import at map: a replacement mapping did not request the GPU lock");
+        const auto completing = mappedAt(window + HalfBytes);
+        const auto completingAt = GuestAllocations::GuestAllocationsGeneration_nid_postfix();
+        Require(!device->ImportGuestMemory(completing, completingAt, false), "host import at map: a mapping that retires an import did so without the GPU lock");
         {
             std::lock_guard lock(AgcDriver::GuestMemory::GpuMutex());
-            Require(device->ImportGuestMemory(mappedAt(window + HalfBytes), GuestAllocations::GuestAllocationsGeneration_nid_postfix(), true), "host import at map: the replacement mapping refused its locked retry");
+            Require(device->ImportGuestMemory(completing, completingAt, true), "host import at map: the locked retry of the completing mapping was refused");
             const std::array<std::uint32_t, 4> pattern{13u, 14u, 15u, 16u};
             Require(device->FillBuffer(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(window)), WindowBytes, pattern), "host import at map: the window completed by a second mapping was not imported as one");
             device->WaitIdle();
@@ -224,6 +228,7 @@ int main() {
 #else
         std::free(window);
 #endif
+        Require(AgcDriver::Graphics::ShadowUnitsLostOnRetire() == lostBefore, "host import at map: an import retirement lost shadowed units");
         std::puts("host import at map tests passed");
         return 0;
     } catch (const std::exception& error) {
