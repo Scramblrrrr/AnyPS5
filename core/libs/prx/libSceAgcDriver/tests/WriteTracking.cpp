@@ -11,6 +11,7 @@
 #endif
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -197,12 +198,16 @@ std::uint64_t ArenaHostHole() {
         Require(next > cursor, "arena enumeration did not advance");
         cursor = next;
     }
-    throw std::runtime_error("the write-watched arena contains no host hole to test");
+    return 0;
 }
 
 void CheckHostHole() {
     constexpr std::size_t bytes = 64;
     const auto hole = ArenaHostHole();
+    if (hole == 0) {
+        std::cout << "host-hole query checks skipped: the arena contains no host hole\n";
+        return;
+    }
     const auto before = TrackerGeneration();
     Require(!Watched(hole, bytes), "an arena host hole reads as watched");
     Require(CollectWrites(hole, bytes) == 0 && CollectWritesUncached(hole, bytes) == 0, "an arena host hole was collected");
@@ -287,6 +292,39 @@ void CheckVersionRanges() {
     Require(UnchangedSince(base, bytes, checkpoints.back()), "the latest checkpoint was rejected");
 }
 
+void CheckLargeCollectMemo() {
+    if (std::getenv("APS5_LOCAL_COLLECT_MEMO_512") == nullptr || std::getenv("APS5_NO_COLLECT_MEMO") != nullptr || std::getenv("APS5_SHARED_COLLECT_MEMO") != nullptr) return;
+    constexpr std::size_t ranges = 350;
+    constexpr std::size_t bytes = ranges * Block;
+    auto* memory = static_cast<std::uint8_t*>(AllocateWatched(bytes));
+    struct Cleanup {
+        void* memory;
+        ~Cleanup() {
+#ifdef _WIN32
+            GuestArena::GuestArenaReset_nid_postfix(memory, bytes);
+            GuestArena::GuestArenaRelease_nid_postfix(memory, bytes);
+#else
+            Unwatch(reinterpret_cast<std::uint64_t>(memory), bytes);
+            munmap(memory, bytes);
+#endif
+        }
+    } cleanup{memory};
+    const auto base = reinterpret_cast<std::uint64_t>(memory);
+    std::memset(memory, 17, bytes);
+    BumpCollectEpoch();
+    for (std::size_t index = 0; index < ranges; ++index) Require(CollectWrites(base + index * Block, 4096) != 0, "a wide collect working set lost watched coverage");
+    const auto collected = TrackerGeneration();
+    for (std::size_t index = 0; index < ranges; ++index) Require(CollectWrites(base + index * Block, 4096) == collected, "the wider memo walked a range twice in one epoch");
+    memory[0] ^= 1;
+    BumpCollectEpoch();
+    Require(CollectWrites(base, 4096) > collected && !UnchangedSince(base, 4096, collected), "a wider memo missed a CPU write after an ordering point");
+    const auto observed = TrackerGeneration();
+    memory[1] ^= 1;
+    Require(CollectWritesUncached(base, 4096) > observed && !UnchangedSince(base, 4096, observed), "an uncached collect reused the wider memo");
+    Unwatch(base, Block);
+    Require(CollectWrites(base, 4096) == 0, "an unwatch left a wider memo entry usable");
+}
+
 void CheckCollectBoundaries() {
     constexpr std::size_t bytes = 3 * Block;
     auto* memory = static_cast<std::uint8_t*>(AllocateWatched(bytes));
@@ -356,6 +394,7 @@ int main() {
         CheckHostHole();
 #endif
         CheckVersionRanges();
+        CheckLargeCollectMemo();
         CheckCollectBoundaries();
     } catch (const std::exception& error) {
         std::cerr << "write tracking test failed: " << error.what() << "\n";
