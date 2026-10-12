@@ -503,6 +503,25 @@ void SuccessfulAllocationKeepsPool() {
     Expect(mock.liveBytes == 0 && mock.liveBuffers.empty(), "normal allocation leaked a resource");
 }
 
+void ImageRecoveryTrimPreservesLiveSlabs() {
+    mock = MockDevice{};
+    {
+        auto context = mockContext();
+        Buffer active(context, 300, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        const auto activeMemory = mock.bound.at(active.Handle()).first;
+        std::memset(active.Bytes().data(), 0x5a, active.Bytes().size());
+        { Buffer idle(context, 600, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT); }
+        Expect(context.bufferPool->SlabBlocks() == 2, "image recovery trim fixture did not retain an empty slab");
+        const auto released = context.bufferPool->TrimRetained();
+        Expect(released != 0 && mock.frees == 1, "image recovery trim did not release an empty slab");
+        Expect(context.bufferPool->SlabBlocks() == 1, "image recovery trim retained an empty slab");
+        Expect(mock.memoryBytes.contains(activeMemory), "image recovery trim freed a live slab");
+        Expect(std::all_of(active.Bytes().begin(), active.Bytes().end(), [](std::byte value) { return value == std::byte{0x5a}; }), "image recovery trim changed a live buffer");
+        Expect(context.bufferPool->TrimRetained() == 0, "image recovery trim reclaimed the live slab on a second call");
+    }
+    Expect(mock.liveBytes == 0 && mock.liveBuffers.empty(), "image recovery trim leaked a resource");
+}
+
 void PartialSlabDoesNotRetry() {
     mock = MockDevice{};
     {
@@ -546,6 +565,7 @@ int main() {
         AllocationFailure(VK_ERROR_DEVICE_LOST, VK_ERROR_DEVICE_LOST, true);
         AllocationFailure(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_DEVICE_LOST, true);
         SuccessfulAllocationKeepsPool();
+        ImageRecoveryTrimPreservesLiveSlabs();
         PartialSlabDoesNotRetry();
         for (const auto result : {VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_OUT_OF_HOST_MEMORY}) {
             HostAllocationFallback(result, VK_SUCCESS, 7u, 0u, HostVisible | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, true);
