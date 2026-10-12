@@ -43,6 +43,9 @@ struct MockDevice {
     VkDeviceSize limit = 0;
     VkResult pressureResult = VK_ERROR_OUT_OF_DEVICE_MEMORY;
     std::uint64_t attempts = 0;
+    std::uint32_t allowedTypes = 3u;
+    std::vector<std::uint32_t> attemptedTypes;
+    VkMemoryAllocateFlags lastFlags = 0;
 };
 
 MockDevice mock;
@@ -56,11 +59,13 @@ VKAPI_ATTR VkResult VKAPI_CALL mockCreateBuffer(VkDevice, const VkBufferCreateIn
 }
 
 VKAPI_ATTR void VKAPI_CALL mockGetBufferMemoryRequirements(VkDevice, VkBuffer buffer, VkMemoryRequirements* requirements) {
-    *requirements = {mock.sizes.at(buffer), 256, 3};
+    *requirements = {mock.sizes.at(buffer), 256, mock.allowedTypes};
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL mockAllocateMemory(VkDevice, const VkMemoryAllocateInfo* info, const VkAllocationCallbacks*, VkDeviceMemory* memory) {
     ++mock.attempts;
+    mock.attemptedTypes.push_back(info->memoryTypeIndex);
+    mock.lastFlags = info->pNext == nullptr ? 0u : static_cast<const VkMemoryAllocateFlagsInfo*>(info->pNext)->flags;
     auto result = VK_SUCCESS;
     if (!mock.results.empty()) {
         result = mock.results.front();
@@ -72,7 +77,7 @@ VKAPI_ATTR VkResult VKAPI_CALL mockAllocateMemory(VkDevice, const VkMemoryAlloca
         return result;
     }
     *memory = reinterpret_cast<VkDeviceMemory>(static_cast<std::uintptr_t>(mock.next++));
-    if (info->memoryTypeIndex == 1) mock.hostMemory[*memory].resize(info->allocationSize);
+    if (info->memoryTypeIndex == 1 || info->memoryTypeIndex == 2) mock.hostMemory[*memory].resize(info->allocationSize);
     mock.memoryBytes[*memory] = info->allocationSize;
     mock.liveBytes += info->allocationSize;
     ++mock.allocations;
@@ -431,6 +436,40 @@ void ReclaimSlabs() {
     Expect(mock.liveBytes == 0, "spare slab recovery leaked device memory");
 }
 
+void HostAllocationFallback(VkResult initial, VkResult final, std::uint32_t allowedTypes, std::uint32_t alternateHeap, VkMemoryPropertyFlags alternateFlags, bool expected, bool cached = false, VkMemoryPropertyFlags requestedProperties = HostVisible) {
+    mock = MockDevice{};
+    mock.allowedTypes = allowedTypes;
+    {
+        auto context = mockContext();
+        context.memory.memoryTypeCount = 3;
+        context.memory.memoryTypes[1].heapIndex = 1u;
+        context.memory.memoryTypes[2] = {alternateFlags, alternateHeap};
+        if (cached) { Buffer idle(context, 2 * MiB, VK_BUFFER_USAGE_TRANSFER_DST_BIT); }
+        mock.results = {initial, final};
+        if (cached) mock.results = {initial, initial, final};
+        const auto before = mock.attempts;
+        const bool oom = initial == VK_ERROR_OUT_OF_DEVICE_MEMORY || initial == VK_ERROR_OUT_OF_HOST_MEMORY;
+        const bool alternate = oom && requestedProperties == HostVisible && (allowedTypes & 4u) != 0u && alternateHeap != 1u && (alternateFlags & HostVisible) == HostVisible;
+        bool succeeded = false;
+        std::string failure;
+        try {
+            Buffer buffer(context, 4 * MiB, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, requestedProperties);
+            succeeded = true;
+            Expect(mock.attemptedTypes.back() == 2u, "host fallback did not select the alternate heap");
+            Expect((mock.lastFlags & VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT) != 0u, "host fallback lost device-address allocation flags");
+            Expect(buffer.DeviceAddress() != 0u, "host fallback lost its device address");
+            buffer.Bytes().front() = std::byte{0x5a};
+            Expect(buffer.Bytes().front() == std::byte{0x5a}, "host fallback was not mapped");
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        Expect(succeeded == expected, "host fallback succeeded or failed unexpectedly");
+        Expect(mock.attempts == before + 1u + (cached && oom ? 1u : 0u) + (alternate ? 1u : 0u), "host fallback retried outside its bounds");
+        if (!expected) Expect(failure.find("Vulkan result " + std::to_string(alternate ? final : initial)) != std::string::npos, "host fallback lost the final Vulkan error");
+    }
+    Expect(mock.liveBytes == 0 && mock.liveBuffers.empty(), "host fallback leaked an allocation or buffer");
+}
+
 void AllocationFailure(VkResult initial, VkResult final, bool cached) {
     mock = MockDevice{};
     {
@@ -508,6 +547,17 @@ int main() {
         AllocationFailure(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_DEVICE_LOST, true);
         SuccessfulAllocationKeepsPool();
         PartialSlabDoesNotRetry();
+        for (const auto result : {VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_OUT_OF_HOST_MEMORY}) {
+            HostAllocationFallback(result, VK_SUCCESS, 7u, 0u, HostVisible | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, true);
+            HostAllocationFallback(result, VK_SUCCESS, 7u, 0u, HostVisible | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, true, true);
+        }
+        HostAllocationFallback(VK_ERROR_DEVICE_LOST, VK_SUCCESS, 7u, 0u, HostVisible, false);
+        HostAllocationFallback(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_DEVICE_LOST, 7u, 0u, HostVisible, false);
+        HostAllocationFallback(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_OUT_OF_DEVICE_MEMORY, 7u, 0u, HostVisible, false);
+        HostAllocationFallback(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_SUCCESS, 3u, 0u, HostVisible, false);
+        HostAllocationFallback(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_SUCCESS, 7u, 1u, HostVisible, false);
+        HostAllocationFallback(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_SUCCESS, 7u, 0u, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, false);
+        HostAllocationFallback(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_SUCCESS, 7u, 0u, HostVisible, false, false, HostVisible | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: %s\n", error.what());
         return 1;

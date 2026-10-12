@@ -41,7 +41,7 @@ BufferPool::~BufferPool() {
     for (auto& [memory, block] : slabBlocks) freeBlock(*block);
 }
 
-VkDeviceMemory BufferPool::AllocateMemory(const VkMemoryAllocateInfo& allocation, const char* operation) {
+VkDeviceMemory BufferPool::AllocateMemory(const Context& context, const VkMemoryAllocateInfo& allocation, const char* operation, std::uint32_t allowedTypes, VkMemoryPropertyFlags requiredProperties) {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     auto result = allocateMemory(device, &allocation, nullptr, &memory);
     const auto initialResult = result;
@@ -55,12 +55,28 @@ VkDeviceMemory BufferPool::AllocateMemory(const VkMemoryAllocateInfo& allocation
             ++attempts;
         }
     }
+    auto finalType = allocation.memoryTypeIndex;
+    const auto hostProperties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    if ((result == VK_ERROR_OUT_OF_DEVICE_MEMORY || result == VK_ERROR_OUT_OF_HOST_MEMORY) && (requiredProperties & hostProperties) == hostProperties) {
+        const auto originalHeap = context.memory.memoryTypes[allocation.memoryTypeIndex].heapIndex;
+        for (std::uint32_t type = 0; type < context.memory.memoryTypeCount; ++type) {
+            const auto& candidate = context.memory.memoryTypes[type];
+            if ((allowedTypes & (1u << type)) == 0u || (candidate.propertyFlags & requiredProperties) != requiredProperties || candidate.heapIndex == originalHeap) continue;
+            auto alternate = allocation;
+            alternate.memoryTypeIndex = type;
+            finalType = type;
+            memory = VK_NULL_HANDLE;
+            result = allocateMemory(device, &alternate, nullptr, &memory);
+            ++attempts;
+            break;
+        }
+    }
     if (result == VK_SUCCESS) {
-        if (attempts == 2) std::fprintf(stderr, "[bufferpool] %s recovered: allocation=%llu reclaimed=%llu initialResult=%d attempts=%u\n", operation, static_cast<unsigned long long>(allocation.allocationSize), static_cast<unsigned long long>(reclaimed), static_cast<int>(initialResult), attempts);
+        if (attempts > 1) std::fprintf(stderr, "[bufferpool] %s recovered: allocation=%llu memoryType=%u originalType=%u reclaimed=%llu initialResult=%d attempts=%u\n", operation, static_cast<unsigned long long>(allocation.allocationSize), finalType, allocation.memoryTypeIndex, static_cast<unsigned long long>(reclaimed), static_cast<int>(initialResult), attempts);
         return memory;
     }
     char details[512];
-    std::snprintf(details, sizeof(details), "%s: allocation=%llu memoryType=%u reclaimed=%llu initialResult=%d attempts=%u", operation, static_cast<unsigned long long>(allocation.allocationSize), allocation.memoryTypeIndex, static_cast<unsigned long long>(reclaimed), static_cast<int>(initialResult), attempts);
+    std::snprintf(details, sizeof(details), "%s: allocation=%llu memoryType=%u originalType=%u reclaimed=%llu initialResult=%d attempts=%u", operation, static_cast<unsigned long long>(allocation.allocationSize), finalType, allocation.memoryTypeIndex, static_cast<unsigned long long>(reclaimed), static_cast<int>(initialResult), attempts);
     Check(result, details);
     return VK_NULL_HANDLE;
 }
@@ -104,7 +120,7 @@ SlabSlot BufferPool::TakeSlot(const Context& context, std::uint32_t memoryType, 
     if (addressable) allocation.pNext = &flags;
     allocation.allocationSize = blockBytes;
     allocation.memoryTypeIndex = memoryType;
-    block->memory = AllocateMemory(allocation, "vkAllocateMemory buffer slab");
+    block->memory = AllocateMemory(context, allocation, "vkAllocateMemory buffer slab");
     if ((context.memory.memoryTypes[memoryType].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
         void* mapping = nullptr;
         const auto mapped = mapMemory(device, block->memory, 0, VK_WHOLE_SIZE, 0, &mapping);
