@@ -3074,18 +3074,17 @@ void GuestBufferMemory::copyRegion(Region& region, bool addressable) {
         } else {
             // `uploaded` holds the backed pieces back to back.
             const auto target = region.buffer->Bytes().first(static_cast<std::size_t>(allocated));
-            const bool zeroGaps = region.bufferEnd != 0;
             std::size_t cursor = 0;
             for (const auto& [first, last] : region.backed) {
                 const auto at = static_cast<std::size_t>(first - region.begin);
-                if (zeroGaps && at > cursor) std::memset(target.data() + cursor, 0, at - cursor);
+                if (at > cursor) std::memset(target.data() + cursor, 0, at - cursor);
                 const auto piece = target.subspan(at, static_cast<std::size_t>(last - first));
                 GuestMemory::Read(first, piece);
                 readBytes += piece.size();
                 if (written) region.uploaded.insert(region.uploaded.end(), piece.begin(), piece.end());
                 cursor = at + piece.size();
             }
-            if (zeroGaps && cursor < target.size()) std::memset(target.data() + cursor, 0, target.size() - cursor);
+            if (cursor < target.size()) std::memset(target.data() + cursor, 0, target.size() - cursor);
         }
     }
     else {
