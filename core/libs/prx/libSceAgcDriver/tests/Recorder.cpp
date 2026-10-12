@@ -4945,6 +4945,56 @@ std::array<std::uint32_t, 8> linearTextureWords(std::uint64_t address, std::uint
     return words;
 }
 
+bool uncachedSnapshotReuseTests(const Device& device, Recorder& recorder) {
+    auto context = device.GetContext();
+    context.hostImportAlignment = 0;
+    TextureDetiler detiler(context);
+    context.detiler = &detiler;
+    Require(SampledTextureCacheBudget(context) == 1048576, "uncached snapshots: the test requires a 1 MiB cache budget");
+    constexpr std::uint32_t width = 1024;
+    constexpr std::uint32_t height = 512;
+    constexpr std::size_t surfaceBytes = width * height * 4;
+    void* block = AllocateWatched(surfaceBytes * 2, 65536);
+    if (block == nullptr) {
+        std::cout << "skipped, snapshot invalidation requires write-watched memory\n";
+        return false;
+    }
+    auto* first = static_cast<std::uint8_t*>(block);
+    auto* second = first + surfaceBytes;
+    const auto cleanup = [&] {
+        recorder.Sync();
+        ClearCachedTextures(context.device);
+        ReleaseWatched(block, surfaceBytes * 2);
+    };
+    try {
+        std::memset(block, 0x11, surfaceBytes * 2);
+        Recorder::CountPresent();
+        const auto firstWords = linearTextureWords(reinterpret_cast<std::uint64_t>(first), width, height, 56);
+        const auto secondWords = linearTextureWords(reinterpret_cast<std::uint64_t>(second), width, height, 56);
+        auto retained = CachedSampledTexture(context, firstWords);
+        auto uncached = CachedSampledTexture(context, secondWords);
+        Require(retained != uncached, "uncached snapshots: different surfaces share an image");
+        Require(CachedSampledTexture(context, secondWords) == uncached, "uncached snapshots: an unchanged refused snapshot was uploaded twice");
+        ClearCachedTextures(context.device);
+        auto afterClear = CachedSampledTexture(context, secondWords);
+        Require(afterClear != uncached, "uncached snapshots: clearing the device cache reused a refused snapshot");
+        second[0] = 0x33;
+        CollectWritesUncached(reinterpret_cast<std::uint64_t>(second), surfaceBytes);
+        auto changed = CachedSampledTexture(context, secondWords);
+        Require(changed != afterClear, "uncached snapshots: a CPU write reused stale snapshot contents");
+        changed.reset();
+        afterClear.reset();
+        uncached.reset();
+        retained.reset();
+    } catch (...) {
+        cleanup();
+        throw;
+    }
+    cleanup();
+    std::cout << "Uncached snapshot reuse and invalidation tests passed\n";
+    return true;
+}
+
 void imageMemoTests(const Device& device, Recorder& recorder) {
     const auto& base = device.GetContext();
     TextureDetiler detiler(base);
@@ -6350,6 +6400,10 @@ int main(int argc, char** argv) {
         std::cout << "host imports " << (PrepareImportWatch(device.GetContext()) == ImportWatch::Unwatch ? "are compared" : "stay watched") << '\n';
         Recorder recorder(device.GetContext());
         recorder.Activate();
+        if (argc == 2 && std::string_view(argv[1]) == "--uncached-snapshot-only") {
+            if (!uncachedSnapshotReuseTests(device, recorder)) return 77;
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--copied-direct-only") {
             copiedDirectOrderingTests(device, recorder);
             return 0;
