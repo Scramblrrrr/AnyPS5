@@ -544,9 +544,10 @@ struct SnapshotMemos {
     std::uint64_t clock = 0;
 };
 
+struct SnapshotMemosTag {};
+
 SnapshotMemos& snapshotMemos() {
-    thread_local SnapshotMemos memos;
-    return memos;
+    return HostThreadLocal<SnapshotMemos, SnapshotMemosTag>();
 }
 
 bool WholeTableReuse() {

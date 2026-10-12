@@ -6,6 +6,7 @@
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include "ThreadOwned.hpp"
+#include "prx/libc/include/HostThreadLocal.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ThreadPriority.hpp"
 #include <bit>
 #include <cstdio>
@@ -14,8 +15,8 @@
 namespace AgcDriver::DriverDetail {
 
 std::deque<const std::uint32_t*>& Driver::releasedTails() {
-    static thread_local std::deque<const std::uint32_t*> released;
-    return released;
+    struct ReleasedTailsTag {};
+    return HostThreadLocal<std::deque<const std::uint32_t*>, ReleasedTailsTag>();
 }
 
 void Driver::noteReleasedTails(const Submission& submission) {
