@@ -2427,6 +2427,7 @@ bool GuestBufferMemory::bindSparseMirror(Region& region, const GuestAllocations:
             cursor = std::min(neededEnd, component->address + component->bytes);
         }
         if (cursor == neededEnd && components.size() > 1u) {
+            if (!WritesOverlap(region.begin, static_cast<std::size_t>(region.end - region.begin))) return false;
             auto span = std::make_shared<GuestAllocations::Range>(*components.front());
             span->address = region.begin;
             span->bytes = static_cast<std::size_t>(neededEnd - region.begin);

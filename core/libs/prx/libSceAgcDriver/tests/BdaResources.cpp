@@ -908,6 +908,15 @@ void sparseHeapMirrorTests(const Context& context, const BdaTestAccess& access) 
             mutation.Add(guest + piece, piece, true, true, true);
         }
         const auto start = MirrorCounters();
+        {
+            GuestBufferMemory readOnly(context);
+            readOnly.AddReadable(base, reserved);
+            readOnly.Upload(false);
+            std::vector<GuestBufferMemory::CopiedRead> proofs;
+            Require(readOnly.CopiedBytes() == 2 * piece && MirrorCounters().sparseBinds == start.sparseBinds, "unwritten split heap lost the copied-read path");
+            Require(readOnly.DirectRegions(&proofs).has_value() && proofs.size() == 1 && proofs.front().sparse, "unwritten split heap lost its draw-reuse proof");
+            readOnly.WriteBack();
+        }
         const auto firstSplit = bind(true, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
             Require(view.range == 2 * piece && bytes[view.offset] == std::byte{0x21} && bytes[view.offset + piece] == std::byte{0x42}, "split heap mirror did not cover both registered ranges");
             bytes[view.offset + piece + 8] = std::byte{0x77};
@@ -916,7 +925,7 @@ void sparseHeapMirrorTests(const Context& context, const BdaTestAccess& access) 
         const auto madeSplit = MirrorCounters();
         Require(madeSplit.rebuilds == start.rebuilds + 1 && madeSplit.sparseBinds == start.sparseBinds + 1 && madeSplit.heapBytes == start.heapBytes + 4 * piece, "split heap and its writable shadow were copied instead of mirrored");
         Require(guest[piece + 8] == 0x77 && guest[piece + 24] == 0x55, "split mirror write-back rolled back a CPU write or lost a GPU write");
-        const auto secondSplit = bind(false, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
+        const auto secondSplit = bind(true, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
             Require(bytes[view.offset + piece + 8] == std::byte{0x77} && bytes[view.offset + piece + 24] == std::byte{0x55}, "split mirror missed its second range's writes");
         });
         Require(secondSplit.buffer == firstSplit.buffer && MirrorCounters().rebuilds == madeSplit.rebuilds, "split mirror was rebuilt on reuse");
@@ -942,7 +951,7 @@ void sparseHeapMirrorTests(const Context& context, const BdaTestAccess& access) 
             Require(guest[piece + 48] == 0x42 && guest[piece + 49] == 0x72 && guest[piece + 50] == 0x73, "overlapping mirror write-back lost a reverted GPU value or rolled back a CPU write");
         }
         guest[piece + 33] = 0x66;
-        bind(false, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
+        bind(true, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
             Require(view.buffer == firstSplit.buffer && bytes[view.offset + piece + 33] == std::byte{0x66}, "split mirror missed a subsequent CPU write");
         });
         {
@@ -951,7 +960,7 @@ void sparseHeapMirrorTests(const Context& context, const BdaTestAccess& access) 
             mutation.Remove(guest + piece);
             mutation.Add(guest + piece, piece, true, true, true);
         }
-        const auto replaced = bind(false, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
+        const auto replaced = bind(true, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
             Require(view.buffer != firstSplit.buffer && bytes[view.offset + piece + 33] == std::byte{0x66}, "split mirror kept a replaced second owner");
         });
         GuestArena::GuestArenaCommit_nid_postfix(guest + 2 * piece, piece, PAGE_READWRITE, 65536);
@@ -960,16 +969,18 @@ void sparseHeapMirrorTests(const Context& context, const BdaTestAccess& access) 
             GuestAllocations::Mutation mutation;
             mutation.Add(guest + 2 * piece, piece, true, true, true);
         }
-        bind(false, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
+        const auto beforeGrowth = MirrorCounters();
+        bind(true, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
             Require(view.buffer != replaced.buffer && view.range == 3 * piece && bytes[view.offset + 2 * piece] == std::byte{0x63}, "split mirror did not grow with a newly registered range");
         });
+        Require(MirrorCounters().sparseBinds == beforeGrowth.sparseBinds + 1 && MirrorCounters().rebuilds == beforeGrowth.rebuilds + 1, "split heap growth fell back to a copy instead of rebuilding its mirror");
         {
             GuestAllocations::Mutation mutation;
             mutation.RequireUnpinned(guest + piece, piece);
             mutation.Remove(guest + piece);
         }
         const auto binds = MirrorCounters().sparseBinds;
-        bind(false, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
+        bind(true, [&](std::span<std::byte> bytes, const VkDescriptorBufferInfo& view) {
             Require(view.range == 3 * piece && bytes[view.offset + 2 * piece] == std::byte{0x63}, "split-range fallback lost the last range");
         });
         Require(MirrorCounters().sparseBinds == binds, "split mirror accepted a registry coverage gap");
