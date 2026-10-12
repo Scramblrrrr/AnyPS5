@@ -4971,15 +4971,18 @@ bool uncachedSnapshotReuseTests(const Device& device, Recorder& recorder) {
         auto uncached = CachedSampledTexture(context, secondWords);
         Require(retained != uncached, "uncached snapshots: different surfaces share an image");
         Require(CachedSampledTexture(context, secondWords) == uncached, "uncached snapshots: an unchanged refused snapshot was uploaded twice");
-        ClearCachedTextures(context.device);
-        auto afterClear = CachedSampledTexture(context, secondWords);
-        Require(afterClear != uncached, "uncached snapshots: clearing the device cache reused a refused snapshot");
         second[0] = 0x33;
         AgcDriver::GuestMemory::CollectWritesUncached(reinterpret_cast<std::uint64_t>(second), surfaceBytes);
         auto changed = CachedSampledTexture(context, secondWords);
-        Require(changed != afterClear, "uncached snapshots: a CPU write reused stale snapshot contents");
-        changed.reset();
+        Require(changed != uncached, "uncached snapshots: a CPU write reused stale refused snapshot contents");
+        auto refusedAgain = CachedSampledTexture(context, firstWords);
+        Require(CachedSampledTexture(context, firstWords) == refusedAgain, "uncached snapshots: the second refused surface was uploaded twice");
+        ClearCachedTextures(context.device);
+        auto afterClear = CachedSampledTexture(context, firstWords);
+        Require(afterClear != refusedAgain, "uncached snapshots: clearing the device cache reused a refused snapshot");
         afterClear.reset();
+        refusedAgain.reset();
+        changed.reset();
         uncached.reset();
         retained.reset();
     } catch (...) {
