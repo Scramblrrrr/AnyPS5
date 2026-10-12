@@ -42,7 +42,7 @@ public:
             info.arrayLayers = 1;
             info.samples = static_cast<VkSampleCountFlagBits>(target.samples);
             info.tiling = VK_IMAGE_TILING_OPTIMAL;
-            info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | (target.samples == 1 ? VK_IMAGE_USAGE_SAMPLED_BIT : 0u);
+            info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | (target.samples == 1 ? VK_IMAGE_USAGE_SAMPLED_BIT : 0u);
             info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             Check(context.Function<PFN_vkCreateImage>("vkCreateImage")(context.device, &info, nullptr, &image), "vkCreateImage depth");
@@ -132,6 +132,24 @@ public:
         return texture;
     }
 
+    void CopyAspectFrom(const DepthSurface& source, VkImageAspectFlagBits aspect) {
+        pendingClear &= ~static_cast<VkImageAspectFlags>(aspect);
+        auto* recorder = RecorderFor(context);
+        std::unique_ptr<CommandBatch> batch;
+        if (recorder == nullptr) batch = std::make_unique<CommandBatch>(context);
+        const auto commands = recorder != nullptr ? recorder->Commands() : batch->Handle();
+        constexpr VkAccessFlags all = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, all, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+        VkImageCopy region{};
+        region.srcSubresource = {static_cast<VkImageAspectFlags>(aspect), 0, 0, 1};
+        region.dstSubresource = region.srcSubresource;
+        region.extent = {target.extent.width, target.extent.height, 1};
+        context.Function<PFN_vkCmdCopyImage>("vkCmdCopyImage")(commands, source.image, VK_IMAGE_LAYOUT_GENERAL, image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, all);
+        if (batch) batch->SubmitAndWait();
+        else Recorder::CountBarriers(Recorder::CommandClass::Draw, 2);
+    }
+
     bool Holds(const Texture* texture) const {
         return std::any_of(textures.begin(), textures.end(), [&](const auto& entry) { return entry.second.get() == texture; });
     }
@@ -177,6 +195,55 @@ std::vector<std::unique_ptr<DepthSurface>>& surfaces() {
 std::set<std::pair<VkDevice, std::uint64_t>>& surfaceAddresses() {
     static auto* addresses = new std::set<std::pair<VkDevice, std::uint64_t>>();
     return *addresses;
+}
+
+struct PlaneOwner {
+    DepthSurface* surface = nullptr;
+    std::uint64_t serial = 0;
+};
+
+using PlaneOwners = std::map<std::pair<VkDevice, std::uint64_t>, PlaneOwner>;
+
+std::uint64_t planeBinds = 0;
+
+PlaneOwners& depthOwners() {
+    static auto* owners = new PlaneOwners();
+    return *owners;
+}
+
+PlaneOwners& stencilOwners() {
+    static auto* owners = new PlaneOwners();
+    return *owners;
+}
+
+void takePlane(DepthSurface& surface, PlaneOwners& owners, std::uint64_t address, VkImageAspectFlagBits aspect) {
+    auto& entry = owners[{surface.context.device, address}];
+    auto* owner = entry.surface;
+    if (owner != nullptr && owner != &surface && owner->target.format == surface.target.format && owner->target.samples == surface.target.samples && owner->target.extent.width == surface.target.extent.width && owner->target.extent.height == surface.target.extent.height) {
+        if ((owner->pendingClear & aspect) != 0) surface.pendingClear |= aspect;
+        else surface.CopyAspectFrom(*owner, aspect);
+    }
+    entry = {&surface, ++planeBinds};
+}
+
+void takePlanes(DepthSurface& surface) {
+    takePlane(surface, depthOwners(), surface.target.address, VK_IMAGE_ASPECT_DEPTH_BIT);
+    if (surface.target.stencilAddress != 0) takePlane(surface, stencilOwners(), surface.target.stencilAddress, VK_IMAGE_ASPECT_STENCIL_BIT);
+}
+
+DepthSurface* planeSurface(VkDevice device, std::uint64_t address) {
+    if (!surfaceAddresses().contains({device, address})) return nullptr;
+    const auto depth = depthOwners().find({device, address});
+    const auto stencil = stencilOwners().find({device, address});
+    const bool hasDepth = depth != depthOwners().end();
+    const bool hasStencil = stencil != stencilOwners().end();
+    if (hasDepth && (!hasStencil || depth->second.serial > stencil->second.serial)) return depth->second.surface;
+    if (hasStencil) return stencil->second.surface;
+    const auto& list = surfaces();
+    const auto found = std::find_if(list.rbegin(), list.rend(), [&](const auto& surface) {
+        return surface->context.device == device && (surface->target.address == address || (surface->target.stencilAddress != 0 && surface->target.stencilAddress == address));
+    });
+    return found == list.rend() ? nullptr : found->get();
 }
 
 std::set<std::uint64_t>& clearedHtiles() {
@@ -233,18 +300,27 @@ float HostDepthBiasConstant(const Context& context, VkFormat format, float const
 VkImageView DepthSurfaceView(const Context& context, const DepthTarget& target) {
     std::lock_guard lock(surfacesMutex());
     const bool cleared = target.htileAddress != 0 && clearedHtiles().erase(target.htileAddress) != 0;
-    for (const auto& surface : surfaces()) {
-        if (surface->context.device != context.device || !sameSurface(surface->target, target)) continue;
-        surface->clearDepth = target.clearDepth;
-        surface->clearStencil = target.clearStencil;
-        if (cleared) surface->pendingClear |= VK_IMAGE_ASPECT_DEPTH_BIT;
-        surface->ApplyFastClear();
-        return surface->view;
+    DepthSurface* surface = nullptr;
+    for (const auto& candidate : surfaces()) {
+        if (candidate->context.device == context.device && sameSurface(candidate->target, target)) {
+            surface = candidate.get();
+            break;
+        }
     }
-    surfaceAddresses().emplace(context.device, target.address);
-    if (target.stencilAddress != 0) surfaceAddresses().emplace(context.device, target.stencilAddress);
-    surfaces().push_back(std::make_unique<DepthSurface>(context, target));
-    return surfaces().back()->view;
+    const bool created = surface == nullptr;
+    if (created) {
+        surfaceAddresses().emplace(context.device, target.address);
+        if (target.stencilAddress != 0) surfaceAddresses().emplace(context.device, target.stencilAddress);
+        surfaces().push_back(std::make_unique<DepthSurface>(context, target));
+        surface = surfaces().back().get();
+    }
+    const bool inherits = depthOwners().contains({context.device, target.address});
+    surface->clearDepth = target.clearDepth;
+    surface->clearStencil = target.clearStencil;
+    takePlanes(*surface);
+    if (cleared && (!created || inherits)) surface->pendingClear |= VK_IMAGE_ASPECT_DEPTH_BIT;
+    surface->ApplyFastClear();
+    return surface->view;
 }
 
 std::uint64_t HtileDepthClearAddress(std::span<const std::uint32_t> code, std::span<const std::uint32_t> userData, const std::array<std::uint32_t, 3>& numThreads) {
@@ -268,19 +344,17 @@ void NoteHtileDepthClear(std::uint64_t htileAddress) {
 
 void ClearDepthSurfaces(VkDevice device) {
     std::lock_guard lock(surfacesMutex());
+    std::erase_if(depthOwners(), [&](const auto& entry) { return entry.first.first == device; });
+    std::erase_if(stencilOwners(), [&](const auto& entry) { return entry.first.first == device; });
     std::erase_if(surfaces(), [&](const auto& surface) { return surface->context.device == device; });
     std::erase_if(surfaceAddresses(), [&](const auto& entry) { return entry.first == device; });
 }
 
 std::shared_ptr<Texture> DepthSurfaceTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource, VkComponentMapping components) {
     std::lock_guard lock(surfacesMutex());
-    if (!surfaceAddresses().contains({context.device, resource.baseAddress})) return nullptr;
-    const auto& list = surfaces();
-    const auto found = std::find_if(list.rbegin(), list.rend(), [&](const auto& surface) {
-        return surface->context.device == context.device && (surface->target.address == resource.baseAddress || (surface->target.stencilAddress != 0 && surface->target.stencilAddress == resource.baseAddress));
-    });
-    if (found == list.rend()) return nullptr;
-    const auto& target = (*found)->target;
+    auto* found = planeSurface(context.device, resource.baseAddress);
+    if (found == nullptr) return nullptr;
+    const auto& target = found->target;
     if (resource.width != target.extent.width || resource.height != target.extent.height) return nullptr;
     const bool stencil = target.stencilAddress != 0 && resource.baseAddress == target.stencilAddress;
     if (!stencil) {
@@ -290,19 +364,16 @@ std::shared_ptr<Texture> DepthSurfaceTexture(const Context& context, std::span<c
     } else if (BytesPerElement(resource.format) != 1u) {
         return nullptr;
     }
-    (*found)->ApplyFastClear();
-    return (*found)->Sampled(words, resource, components);
+    found->ApplyFastClear();
+    return found->Sampled(words, resource, components);
 }
 
 bool DepthSurfaceHolds(const Context& context, const GuestTextureResource& resource, const Texture* texture) {
     if (resource.dimension != TextureDimension::k2D || resource.baseArray != 0) return false;
     const auto address = resource.baseAddress;
     std::lock_guard lock(surfacesMutex());
-    const auto& list = surfaces();
-    const auto found = std::find_if(list.rbegin(), list.rend(), [&](const auto& surface) {
-        return surface->context.device == context.device && (surface->target.address == address || (surface->target.stencilAddress != 0 && surface->target.stencilAddress == address));
-    });
-    return found != list.rend() && (*found)->Holds(texture);
+    const auto* found = planeSurface(context.device, address);
+    return found != nullptr && found->Holds(texture);
 }
 
 VkImageAspectFlags HtileFillClears(std::uint32_t pattern, bool stencilInHtile) {
@@ -333,12 +404,9 @@ void NoteDepthMetadataFill(std::uint64_t address, std::size_t bytes, std::uint32
 
 bool DepthSurfaceAt(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource) {
     std::lock_guard lock(surfacesMutex());
-    const auto& list = surfaces();
-    const auto found = std::find_if(list.rbegin(), list.rend(), [&](const auto& surface) {
-        return surface->context.device == context.device && (surface->target.address == resource.baseAddress || (surface->target.stencilAddress != 0 && surface->target.stencilAddress == resource.baseAddress));
-    });
-    if (found == list.rend()) return false;
-    const auto& target = (*found)->target;
+    const auto* found = planeSurface(context.device, resource.baseAddress);
+    if (found == nullptr) return false;
+    const auto& target = found->target;
     if (resource.width != target.extent.width || resource.height != target.extent.height) return false;
     const bool stencil = target.stencilAddress != 0 && target.stencilAddress == resource.baseAddress;
     const bool d16 = target.format == VK_FORMAT_D16_UNORM || target.format == VK_FORMAT_D16_UNORM_S8_UINT;
