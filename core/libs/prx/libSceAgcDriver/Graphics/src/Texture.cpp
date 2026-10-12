@@ -66,6 +66,12 @@ TextureProfile& Profile() {
 // FlushPending that forced the write-back (the other callers name themselves: "refresh", "cache
 // eviction", "explicit"). `flushReason` is set by the caller around its writeBack calls.
 thread_local const char* flushReason = nullptr;
+
+bool TraceFlush(const char* reason) {
+    static const bool enabled = std::getenv("APS5_TRACE_FLUSH") != nullptr;
+    static const char* filter = std::getenv("APS5_TRACE_FLUSH_REASON");
+    return enabled && (filter == nullptr || *filter == '\0' || (reason != nullptr && std::strcmp(filter, reason) == 0));
+}
 // Likewise what made an upload necessary: "first" (a new image), "keys" (the DCC keys changed),
 // "cpu" (a CPU store stamped a changed unit), "flushed" (another image's results were stored over
 // the surface by this refresh), "store" (a driver store: a fill, a copy, a label, an earlier
@@ -3152,8 +3158,7 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
         }
     } unregister{flush};
     // Debug aid: APS5_TRACE_FLUSH names what forces pending results to guest memory.
-    static const bool trace = std::getenv("APS5_TRACE_FLUSH") != nullptr;
-    if (trace) {
+    if (TraceFlush(reason)) {
         for (const auto& texture : flush) std::fprintf(stderr, "[flush] image 0x%llx+0x%llx for %s 0x%llx+0x%zx\n", static_cast<unsigned long long>(texture->descriptor.baseAddress), static_cast<unsigned long long>(texture->guestBytes), reason, static_cast<unsigned long long>(address), bytes);
     }
     std::lock_guard gpu(GuestMemory::GpuMutex());
@@ -3982,7 +3987,7 @@ std::vector<StorageTexture::Adjacent> StorageTexture::adjacentPendingUnchanged(s
 }
 
 void StorageTexture::advanceAdjacent(const std::vector<Adjacent>& adjacent, std::uint64_t now, std::uint64_t firstBlock, std::uint64_t lastBlock) {
-    static const bool trace = std::getenv("APS5_TRACE_FLUSH") != nullptr;
+    const bool trace = TraceFlush(flushReason);
     constexpr std::uint64_t block = 65536;
     for (const auto& [texture, layer, seen] : adjacent) {
         // A layer stored or refreshed meanwhile set its own generation (an old one on purpose when
@@ -4545,8 +4550,7 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
         }
     }
     // Debug aid: APS5_TRACE_FLUSH also names the blocks a write-back leaves to the CPU.
-    static const bool traceKept = std::getenv("APS5_TRACE_FLUSH") != nullptr;
-    if (traceKept && skippedAny) {
+    if (TraceFlush(flushReason) && skippedAny) {
         const auto first = keep.empty() ? descriptor.baseAddress + guestBytes : keep.front().first;
         std::fprintf(stderr, "[flush] image 0x%llx+0x%llx keeps %zu CPU-written 64 KiB blocks (first stored byte at +0x%llx, %zu ranges stored, generation %llu)\n", static_cast<unsigned long long>(descriptor.baseAddress), static_cast<unsigned long long>(guestBytes), skipped, static_cast<unsigned long long>(first - descriptor.baseAddress), keep.size(), static_cast<unsigned long long>(generation));
     }
