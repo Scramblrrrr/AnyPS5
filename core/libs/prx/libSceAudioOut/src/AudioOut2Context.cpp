@@ -248,7 +248,7 @@ static void DeviceCallback(void* userdata, Uint8* stream, int length) {
     }
 }
 
-static void TraceSummary(AudioOut2Context& context, Clock::time_point now) {
+static void TraceSummary(AudioOut2Context& context, Clock::time_point now, std::unique_lock<std::mutex>& lock) {
     if (!AudioOut2TraceEnabled()) return;
     if (context.summaryStart == Clock::time_point{}) {
         context.summaryStart = now;
@@ -256,22 +256,23 @@ static void TraceSummary(AudioOut2Context& context, Clock::time_point now) {
     }
     const auto elapsed = std::chrono::duration<double>(now - context.summaryStart).count();
     if (elapsed < 1.0) return;
-    const auto printStarted = Clock::now();
-    std::fprintf(stderr, "[audioout2] t=%.3f ctx %p: %.1f pushes/s, %.1f advances/s, %.1f queue polls/s, hw queue %u/%u, unread %u ms, mix peak %.3f; totals: pushes %llu (%llu blocking, %llu queue-full rejects), primes %llu, dropped %llu\n",
+    char summary[768];
+    char callback[384];
+    char work[384];
+    std::snprintf(summary, sizeof(summary), "[audioout2] t=%.3f ctx %p: %.1f pushes/s, %.1f advances/s, %.1f queue polls/s, hw queue %u/%u, unread %u ms, mix peak %.3f; totals: pushes %llu (%llu blocking, %llu queue-full rejects), primes %llu, dropped %llu\n",
         AudioOut2TraceSeconds(), static_cast<void*>(&context), static_cast<double>(context.summaryPushes) / elapsed, static_cast<double>(context.summaryAdvances) / elapsed,
         static_cast<double>(context.summaryPolls) / elapsed, QueueLevel(context, now), context.queueDepth, PendingMs(context), static_cast<double>(context.summaryPeak),
         static_cast<unsigned long long>(context.pushes), static_cast<unsigned long long>(context.blockingPushes), static_cast<unsigned long long>(context.fullRejects),
         static_cast<unsigned long long>(context.primes), static_cast<unsigned long long>(context.dropped));
     context.summaryStart = now;
-    std::fprintf(stderr, "[audioout2-callback] t=%.3f ctx %p: %.1f calls/s, max start gap %.2f ms, max context-lock wait %.2f ms; total start gaps over 50 ms %llu\n",
+    std::snprintf(callback, sizeof(callback), "[audioout2-callback] t=%.3f ctx %p: %.1f calls/s, max start gap %.2f ms, max context-lock wait %.2f ms; total start gaps over 50 ms %llu\n",
         AudioOut2TraceSeconds(), static_cast<void*>(&context), static_cast<double>(context.summaryCallbacks) / elapsed,
         context.summaryCallbackGapMs, context.summaryCallbackLockMs, static_cast<unsigned long long>(context.lateCallbacks));
-    std::fprintf(stderr, "[audioout2-work] t=%.3f ctx %p: max render %.2f ms, max capture %.2f ms, max pad probe %.2f ms, previous summary print %.2f ms\n",
+    std::snprintf(work, sizeof(work), "[audioout2-work] t=%.3f ctx %p: max render %.2f ms, max capture %.2f ms, max pad probe %.2f ms, previous summary print %.2f ms\n",
         AudioOut2TraceSeconds(), static_cast<void*>(&context), context.summaryRenderMs, context.summaryCaptureMs, context.summaryPadProbeMs, context.summaryPrintMs);
     context.summaryRenderMs = 0.0;
     context.summaryCaptureMs = 0.0;
     context.summaryPadProbeMs = 0.0;
-    context.summaryPrintMs = std::chrono::duration<double, std::milli>(Clock::now() - printStarted).count();
     context.summaryCallbacks = 0;
     context.summaryCallbackGapMs = 0.0;
     context.summaryCallbackLockMs = 0.0;
@@ -279,6 +280,12 @@ static void TraceSummary(AudioOut2Context& context, Clock::time_point now) {
     context.summaryAdvances = 0;
     context.summaryPolls = 0;
     context.summaryPeak = 0.0f;
+    lock.unlock();
+    const auto printStarted = Clock::now();
+    std::fprintf(stderr, "%s%s%s", summary, callback, work);
+    const auto printMs = std::chrono::duration<double, std::milli>(Clock::now() - printStarted).count();
+    lock.lock();
+    context.summaryPrintMs = printMs;
 }
 
 extern "C" {
@@ -398,7 +405,7 @@ int APS5_VABI sceAudioOut2ContextPush(AudioOut2ContextHandle ctx, uint32_t block
         AUDIOOUT2_TRACE("t=%.3f Push ctx %p blocking=%u: grain from %u ports, hw queue %u/%u, unread %u ms\n", AudioOut2TraceSeconds(), static_cast<void*>(context), blocking,
             mixed, QueueLevel(*context, now), context->queueDepth, PendingMs(*context));
     }
-    TraceSummary(*context, now);
+    TraceSummary(*context, now, lock);
     return 0;
 }
 
