@@ -9,6 +9,10 @@
   - libwinpthread-1.dll
 - winpthreads initializes a statically initialized rwlock on its first lock and fails a concurrent first lock with `EINVAL`, which `std::shared_mutex` and `std::shared_timed_mutex` ignore, so that lock does not exclude. Guest rwlocks ([Pthread.hpp](../../core/libs/prx/libkernel/Pthread/include/Pthread.hpp)) are locked once when created. The host `std::shared_mutex` objects in [Recompiler.cpp](../../core/shader/recompiler/Recompiler.cpp) and [GuestWriteWatch.cpp](../../core/libs/prx/libc/src/GuestWriteWatch.cpp) are not, and can still race on their first contended use.
 
+### Shader memory
+
+- [Cached source IR](../../core/shader/recompiler/Recompiler.cpp) clears completed SSA construction tables and releases values unreachable from instructions, metadata and resource plans before caching a source program. Reclamation must account for every new IR pointer owner; a remaining external use throws. Live IDs are retained. Source and variant entries remain cached without an eviction bound. A pending source program is released after its first variant is obtained; peak gameplay memory and Linux performance remain unmeasured.
+
 ### Silent stubs
 
 Throughout the project, every function at every stage either **does exactly what it's supposed to or throws an exception**. Everywhere... except:
