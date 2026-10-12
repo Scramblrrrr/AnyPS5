@@ -420,7 +420,7 @@ ShaderVertexStageInfo readVertexInfo(Reader& reader, std::uint32_t version) {
     info.fetchAttribReg = reader.ReadU32();
     info.fetchBufferReg = reader.ReadU32();
     info.fetchEmbedded = reader.ReadBool();
-    if (version >= 7u) info.paClVsOutCntl = reader.ReadU32();
+    if (version >= 17u) info.paClVsOutCntl = reader.ReadU32();
     return info;
 }
 
@@ -736,7 +736,7 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
     std::string buffer;
     Writer writer(buffer);
     writer.WriteU32(0x41505335u);
-    writer.WriteU32(16u);
+    writer.WriteU32(17u);
     writeShaderBinary(writer, request.shader);
     writeGuestContext(writer, request.context);
     writeSpirvTarget(writer, request.target);
@@ -764,7 +764,7 @@ DeserializedRequest RequestSerializer::Deserialize(std::string_view text) const 
     Reader reader(decoded);
     if (reader.ReadU32() != 0x41505335u) throw std::runtime_error("invalid recompile request signature");
     const auto version = reader.ReadU32();
-    if (version < 1u || version > 16u) throw std::runtime_error("unsupported recompile request serialization version");
+    if (version < 1u || version > 17u) throw std::runtime_error("unsupported recompile request serialization version");
     DeserializedRequest result{};
     result.request.shader = readShaderBinary(reader, result.shaderCode, result.shaderHeader);
     result.request.context = readGuestContext(reader, result, version);
