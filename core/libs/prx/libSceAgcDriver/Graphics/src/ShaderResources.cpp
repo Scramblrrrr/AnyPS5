@@ -4164,7 +4164,8 @@ std::optional<std::vector<ShaderResources::MovedBuffer>> ShaderResources::MovedR
     // unchanged since it was taken and no recorded work still writes it (a CPU read would wait for
     // that work, as the build's copy did); otherwise its elements are copied anew below, or the
     // object misses when they are too large.
-    thread_local std::vector<bool> stale;
+    struct StaleCopiedRegionsTag {};
+    auto& stale = HostThreadLocal<std::vector<bool>, StaleCopiedRegionsTag>();
     stale.assign(copiedRegions.size(), false);
     for (std::size_t at = 0; at < copiedRegions.size(); ++at) {
         const auto& region = copiedRegions[at];

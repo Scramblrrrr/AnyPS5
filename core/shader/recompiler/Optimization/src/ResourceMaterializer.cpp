@@ -5,6 +5,7 @@
 #include "RdnaDecoder/RdnaImageOpDecoder.hpp"
 #include "SpirvBackend/SpirvBufferFormat.hpp"
 #include "ImageTableAbi.hpp"
+#include "prx/libc/include/HostThreadLocal.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -483,9 +484,10 @@ struct ColumnMemos {
     std::uint64_t clock = 0;
 };
 
+struct ColumnMemosTag {};
+
 ColumnMemos& columnMemos() {
-    thread_local ColumnMemos memos;
-    return memos;
+    return HostThreadLocal<ColumnMemos, ColumnMemosTag>();
 }
 
 struct TableTrace {
