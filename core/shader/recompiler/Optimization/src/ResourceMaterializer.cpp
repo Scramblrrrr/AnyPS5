@@ -6,6 +6,7 @@
 #include "SpirvBackend/SpirvBufferFormat.hpp"
 #include "ImageTableAbi.hpp"
 #include "ResultKey.hpp"
+#include "prx/libc/include/HostThreadLocal.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -499,18 +500,15 @@ struct ColumnMemo {
 constexpr std::size_t ColumnMemoEntries = 8;
 
 struct ColumnMemos {
+    ColumnMemos() { entries.reserve(ColumnMemoEntries); }
     std::vector<ColumnMemo> entries;
     std::uint64_t clock = 0;
 };
 
+struct ColumnMemosTag {};
+
 ColumnMemos& columnMemos() {
-    // Reserved whole: a whole-snapshot memo refers to its column memos by address.
-    thread_local ColumnMemos memos = [] {
-        ColumnMemos made;
-        made.entries.reserve(ColumnMemoEntries);
-        return made;
-    }();
-    return memos;
+    return HostThreadLocal<ColumnMemos, ColumnMemosTag>();
 }
 
 // A plan's whole snapshot made of pure skips only (every column's output its memo's, unchanged):
