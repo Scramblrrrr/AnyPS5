@@ -48,9 +48,6 @@ alignas(256) constexpr std::array<std::uint32_t, 78> LoadsCode{
     0x80010e02, 0xe0781020, 0x80011202, 0xe0781030, 0x80011602, 0xbf810000
 };
 
-// v_lshlrev_b32 v1, 2, v0; buffer_load_dword v2, v1, s[8:11], 0 offen; s_waitcnt vmcnt(0);
-// buffer_store_dword v2, v1, s[4:7], 0 offen; s_endpgm: copies a descriptor-bound buffer, one
-// dword per thread, so its input is read in place through a host import.
 alignas(256) constexpr std::array<std::uint32_t, 7> CopyCode{0x34020082, 0xe0301000, 0x80020201, 0xbf8c3f70, 0xe0701000, 0x80010201, 0xbf810000};
 
 class GuestBlock {
@@ -86,9 +83,6 @@ private:
     bool registered;
 };
 
-// A dispatch storing into memory no guest allocation registers, so nothing imports it: the
-// region is copied and its results reach guest memory by a CPU write-back when the batch is
-// reaped.
 void RecordDispatch(AgcDriver::VulkanDevice& device, const GuestBlock& input, std::uint64_t output) {
     std::vector<std::uint32_t> userData(10, 0u);
     const std::array<std::uint32_t, 4> descriptor{static_cast<std::uint32_t>(output), static_cast<std::uint32_t>((output >> 32u) & 0xffffu), OutputBytes, 0x31016facu};
@@ -162,9 +156,6 @@ int HoldLabel(AgcDriver::VulkanDevice& device, std::uint64_t address, std::uint3
     return reason;
 }
 
-// Thread 0 of LoadsCode reads its input's first four dwords, and with dword 2 odd loads the dword
-// at input + dword 3 + 0x200 into the 15th dword of its output record: a label held at dword 3
-// selects which of two marker words the dispatch stores.
 constexpr std::size_t LabelOffset = 12;
 constexpr std::size_t PollLabelOffset = 64;
 constexpr std::size_t WaitLabelOffset = 128;
@@ -191,16 +182,6 @@ bool Lands(const GuestBlock& block, std::size_t offset, std::uint32_t value, std
 
 }
 
-// A completion label recorded after a dispatch whose results are copied back by the CPU is held
-// until that write-back: (c) a guest polling the label with plain loads never sees it before the
-// results; (a) a dispatch recorded after it that reads the label's bytes in place sees the new
-// value; (b) a WAIT_REG_MEM on the held label is answered by the label table at once (no wait on
-// the reap), and a waiter that submits and reaps, as a queue worker does for a refused late
-// label, sees it land in guest memory after the copied results; (d) a plain store recorded over a
-// held label lands after it, not under it; (e) a held label lands within a bounded time with
-// nothing further from the recording thread, in a submitted batch and in the open one. Cases (a),
-// (b) and the bound one hold the GPU mutex from the label through the reader, so the held-label
-// lander (which only tries the mutex) cannot land the label first.
 int main() {
 #ifdef _WIN32
     _putenv_s("APS5_CPU_COPIES", "1");

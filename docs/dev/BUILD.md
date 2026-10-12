@@ -99,6 +99,12 @@ Set `APS5_TRACE_BAD_DISPATCH=1` to report the original argument address, CPU fal
 
 With `APS5_TRACE_FLUSH=1`, set `APS5_TRACE_FLUSH_REASON` to an exact reason such as `indirect dispatch arguments` to restrict image flush, adjacent-image generation and preserved CPU-block diagnostics to that consumer. An unset or empty filter retains the full trace. This only filters diagnostics; it does not change flushing or write-back.
 
+## Held completion labels
+
+Completion labels stay behind pending copied write-backs, so observing a label also observes the preceding results. A helper submits an open batch holding such a label after the flush deadline and reaps it when the GPU finishes. `APS5_LABEL_FLUSH_US` sets that deadline in microseconds; normal label batching defaults to 1000. Device and recorder teardown pause and join the helper before releasing its resources.
+
+For comparisons, `APS5_NO_PROMPT_HELD_LABELS=1` disables the helper, `APS5_NO_SETTLE_HELD_LABELS=1` disables consumer settling, and `APS5_NO_SETTLE_ADDRESS_BUILDS=1` disables settling for address-based uploads. `APS5_LABEL_GPU_OVER_COPIES=1` restores GPU stores for completion labels even with copied write-backs pending. These switches are off by default and relax the ordering or prompt delivery provided by the normal path.
+
 ## Worker sampler
 
 Set `APS5_SAMPLE_WORKER=<file>` to sample queue worker 0 every millisecond (in practice every timer tick). Every 20 s and at exit it writes `<file>`, one `module offset self inclusive` line per sampled address, and `<file stem>.collapsed.txt`, the worker's whole stacks in the collapsed format that speedscope.app and flamegraph.pl read: one `frame;...;frame count` line per distinct stack, root first, each frame as `module+0xRVA`. A walk that ends before the thread's root starts with `[truncated]`. The `#` lines give the samples, the walk depth (64 frames), the truncated walks, the mean and longest time the worker was suspended, and the size and PE timestamp of each module, to check the binary a file is symbolized against. A frame with `.pdata` is stepped by `RtlVirtualUnwind`; any other frame by its DWARF record in `.ehfram`, the unwind data the libraries are built with. Those steps read only inside the worker's stack, and a module is indexed after the worker resumes, the first time a walk meets it.

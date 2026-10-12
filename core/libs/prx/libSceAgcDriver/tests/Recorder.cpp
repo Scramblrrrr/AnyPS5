@@ -1306,10 +1306,6 @@ void hostImportRetirementTests(const Device& device) {
     std::cout << "Host import retirement locking and GPU readback tests passed\n";
 }
 
-// An import holding unpublished unit shadows retires when a mapping grows its registration. The
-// mapping without the GPU lock leaves it alone (ImportMappedRanges defers to the locked retry), and
-// the locked retry publishes the shadowed bytes into guest memory before the import goes: no unit
-// is lost on retirement.
 void hostImportRetirementShadowTests(const Device& device) {
     using namespace AgcDriver::GuestMemory;
     const auto& context = device.GetContext();

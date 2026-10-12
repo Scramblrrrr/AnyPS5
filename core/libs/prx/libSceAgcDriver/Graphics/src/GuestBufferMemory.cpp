@@ -3216,9 +3216,6 @@ void GuestBufferMemory::UploadFinish(bool addressable) {
         std::lock_guard lock(Mirrors().mutex);
         ++Mirrors().subranges;
     }
-    // Completion labels held over the regions still to resolve land in one pass before any import
-    // is taken: a landing can refresh the import table, which would leave the import pointers of
-    // regions resolved before it dangling.
     if (context.hostImportAlignment != 0 && Recorder::HeldCompletionLabels() != 0) {
         for (const auto& region : regions) {
             if (region.pending && region.mirror == nullptr) SettleHeldLabels(region.begin, static_cast<std::size_t>(region.end - region.begin));

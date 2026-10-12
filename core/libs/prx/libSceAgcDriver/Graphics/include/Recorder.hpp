@@ -305,10 +305,7 @@ public:
     // where a per-dword lookup would not do.
     bool PendingLabelIn(std::uint64_t address, std::size_t bytes) const;
     bool CompletionLabelIn(std::uint64_t address, std::size_t bytes) const;
-    // Whether a recorded label kept behind completions (stored by the CPU at reap) covers a dword of
-    // the range; queued labels of other queues do not count.
     bool HeldLabelIn(std::uint64_t address, std::size_t bytes) const;
-    // The dwords of the recorded labels kept behind completions (stored by the CPU at reap).
     std::vector<std::pair<std::uint64_t, std::size_t>> HeldLabelRanges() const;
     // PendingLabel of the active recorder WITHOUT GuestMemory::GpuMutex: the table has a small mutex
     // of its own (every mutation holds both), so a WAIT_REG_MEM consults it without queueing behind
@@ -379,8 +376,6 @@ public:
     static std::uint64_t PublishGeneration();
     // labels waiting in completion actions (the CPU must reap their batch for them to land);
     static std::uint64_t PendingCompletionLabels();
-    // of those, the labels kept behind completions (the table marks them behindCompletion), without
-    // the end-of-pipe interrupts AfterRecordedWork counts there: 0 means no held label to settle;
     static std::uint64_t HeldCompletionLabels();
     // write-back completions (OnComplete) of unfinished batches: a reaper retires them when every
     // worker sleeps, as for the labels above;
@@ -569,9 +564,6 @@ private:
         // Labels stored by this batch's completion actions (see AfterCompletions); subtracted from
         // the lock-free pending count when the batch finishes, whether or not its completions ran.
         std::uint32_t completionLabelCount = 0;
-        // Of those, the labels kept behind completions (HeldCompletionLabels), likewise, and when
-        // the first of them was recorded (the held-label lander submits the open batch after the
-        // label flush deadline).
         std::uint32_t heldLabelCount = 0;
         std::chrono::steady_clock::time_point heldSince{};
         // Write-back completions (OnComplete), likewise.
@@ -761,13 +753,7 @@ private:
     void noteLabelOn(Batch& batch, std::uint64_t address, std::span<const std::byte> bytes, std::uint64_t stamp, std::uint32_t queue, bool behindCompletion = false);
     // Flags the recorded entries of `batch` over [begin, end) as stored by a completion action.
     void markBehindCompletion(const Batch& batch, std::uint64_t begin, std::uint64_t end);
-    // Counts a label kept behind the completions of `batch` (HeldCompletionLabels) and wakes the
-    // held-label lander.
     void countHeldLabel(Batch& batch);
-    // The held-label lander (see Recorder.cpp): under the mutex, landHeld reaps the finished batches,
-    // submits the open batch when its oldest held label is older than `deadline`, and names the
-    // oldest in-flight batch still holding one (serial 0: none) and how long the open batch may stay
-    // open (`pause`, zero when it holds none).
     struct HeldLanding {
         std::uint64_t serial = 0;
         std::chrono::steady_clock::duration pause{};
@@ -844,9 +830,6 @@ private:
     bool refreshDrawSnapshot(DrawSnapshot& entry, std::uint64_t address, std::size_t bytes);
 };
 
-// Pauses the held-label lander (see Recorder.cpp) for its lifetime: the thread is joined before the
-// constructor returns and not started again until the last pause ends. A device teardown takes one
-// before it touches its recorder, and ~Recorder takes its own.
 class HeldLabelLanderPause {
 public:
     HeldLabelLanderPause();
@@ -855,10 +838,6 @@ public:
     HeldLabelLanderPause& operator=(const HeldLabelLanderPause&) = delete;
 };
 
-// A completion label kept behind copied write-backs (VulkanDevice::WriteLabelOnGpu) is stored by
-// the CPU when its batch is reaped, not by the GPU. GPU work about to read guest memory in place
-// waits for that store first: SettleHeldLabels for the range it binds, SettleAllHeldLabels for a
-// reader of any registered address (an address-based build).
 void SettleHeldLabels(std::uint64_t address, std::size_t bytes);
 void SettleAllHeldLabels();
 

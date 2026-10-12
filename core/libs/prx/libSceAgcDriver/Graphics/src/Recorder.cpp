@@ -454,13 +454,6 @@ void JoinReleaseThread() {
     queue.stop = false;
 }
 
-// The held-label lander's state (see Recorder::heldLabelLander): one thread for the process, started
-// at the first held label, as the release thread, and leaked for the same reason. A device or
-// recorder teardown pauses it (HeldLabelLanderPause): `pauses` counts the teardowns in progress, the
-// thread leaves and is joined at the first, and nothing starts it again until the last ends; held
-// labels counted meanwhile (a late count during the teardown's Sync) get it back then. `failed`:
-// the thread hit a Vulkan or recording failure and left for good; the queue workers land held
-// labels from then on and report the failure themselves.
 struct HeldLabelLanderState {
     std::mutex mutex;
     std::condition_variable wake;
@@ -476,16 +469,11 @@ HeldLabelLanderState& HeldLanderState() {
     return *state;
 }
 
-// Debug aid: APS5_NO_PROMPT_HELD_LABELS=1 starts no lander; held labels land when a queue worker
-// submits and reaps their batch, as before.
 bool PromptHeldLabels() {
     static const bool prompt = std::getenv("APS5_NO_PROMPT_HELD_LABELS") == nullptr;
     return prompt;
 }
 
-// The open batch's held labels are submitted within the queue workers' label flush deadline, read
-// as Driver::labelFlushDeadline reads it: APS5_LABEL_FLUSH_US, else 1000 us with label batching and
-// 250 us without (APS5_NO_LABEL_BATCH_SUBMIT or APS5_NO_LABEL_BATCHING).
 std::chrono::microseconds HeldLabelDeadline() {
     static const std::chrono::microseconds value = [] {
         const char* text = std::getenv("APS5_LABEL_FLUSH_US");
@@ -1169,8 +1157,6 @@ Recorder::Recorder(const Context& context, bool timelineSemaphores) : context(co
 }
 
 Recorder::~Recorder() {
-    // The lander touches the active recorder under the mutex only, but a teardown without the mutex
-    // (a test's device) must not overlap it, and no late held label may start it again meanwhile.
     const HeldLabelLanderPause landerPause;
     try {
         Sync();
@@ -3043,7 +3029,6 @@ std::vector<std::pair<std::uint64_t, std::size_t>> Recorder::HeldLabelRanges() c
     return ranges;
 }
 
-// Debug aid: APS5_NO_SETTLE_HELD_LABELS=1 lets GPU readers bind memory with held labels unsettled.
 bool settleHeldLabels() {
     static const bool settle = std::getenv("APS5_NO_SETTLE_HELD_LABELS") == nullptr;
     return settle;
@@ -3396,19 +3381,6 @@ Recorder::HeldLanding Recorder::landHeld(std::chrono::steady_clock::duration dea
     return next;
 }
 
-// A completion label kept behind completions (AfterCompletions) reaches guest memory only when its
-// batch is submitted and then reaped. Both were left to the queue workers (a packet boundary, a
-// WAIT_REG_MEM poll, the end of a submission, an idle worker's reap), so a held label waited as
-// long as the workers were busy elsewhere or had nothing to execute, seconds at times, while a
-// guest polling it with plain loads gives up and reads its results anyway. While any label is
-// held, this thread submits the open batch holding one once the label flush deadline passed, waits
-// on the timeline (without the mutex) for the oldest in-flight batch holding one, and reaps it
-// under the mutex as soon as it finished. A reap's write-back can wait for a later batch under the
-// mutex (why a compute worker never reaps queue 0's batches); this thread executes no queue's
-// packets, so such a wait holds up no queue beyond the mutex itself. The mutex is only tried, with
-// a backoff up to about 1 ms, so a teardown holding it while it pauses the thread never deadlocks.
-// A failure (a lost device, a failed submit) stops the thread for good: it cannot report one to
-// the driver, the queue workers meet the same failure and do.
 void Recorder::heldLabelLander() {
     CpuTopology::PinHelperThread("held-label lander");
     auto& state = HeldLanderState();

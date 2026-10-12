@@ -465,7 +465,6 @@ struct VulkanDevice::State {
         return std::any_of(copiedWriters->begin(), copiedWriters->end(), overlaps) || std::any_of(Graphics::DrawCopiedWriters()->begin(), Graphics::DrawCopiedWriters()->end(), overlaps);
     }
 
-    // Whether any recorded dispatch's or draw's copied write-back is still to run; under GpuMutex.
     bool AnyCopiedWriter() const {
         return !copiedWriters->empty() || !Graphics::DrawCopiedWriters()->empty();
     }
@@ -1566,17 +1565,7 @@ int VulkanDevice::WriteLabelOnGpu(std::uint64_t address, std::span<const std::by
     // stores of a run against each other and against the work before and after, the queued DCC
     // key stores included).
     const auto recordStore = [&] { recorder.RecordStore(import->buffer, address - import->base, bytes, address); };
-    // A label the GPU stores is visible to the guest's CPU as soon as the GPU reaches it, while a
-    // copied buffer's results reach guest memory only when its batch is reaped (a CPU write-back):
-    // a guest that polls the label and then reads such a buffer with plain loads would find stale
-    // bytes. While any copied write-back is pending, a completion label is therefore stored by a
-    // completion action of the open batch, after the write-backs of it and every batch before it,
-    // and not on the GPU. Debug aid: APS5_LABEL_GPU_OVER_COPIES=1 stores it on the GPU as before.
     static const bool gpuOverCopies = std::getenv("APS5_LABEL_GPU_OVER_COPIES") != nullptr;
-    // A store over a label still held there (any store: a plain packet store, or a label recorded
-    // once no copied write-back is pending) is held too: stored on the GPU it would land first and
-    // the held label's reap store would put the older value back over it. Held stores land in
-    // completion order, which is program order.
     const bool overHeld = Graphics::Recorder::HeldCompletionLabels() != 0 && recorder.HeldLabelIn(address, bytes.size());
     if (overHeld || (completionLabel && !gpuOverCopies && state->AnyCopiedWriter())) {
         if (drain) return 2;
