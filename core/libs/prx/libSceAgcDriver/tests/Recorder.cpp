@@ -5542,6 +5542,12 @@ int main(int argc, char** argv) {
             multisampleGuestAccessTests(device, recorder);
             return 0;
         }
+        if (argc == 2 && std::string_view(argv[1]) == "--depth-proof-only") {
+            if (!device.NullDescriptors()) return 77;
+            depthSurfaceProofTests(device, recorder);
+            std::cout << "Depth surface lookup and fast proof tests passed\n";
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--draw-descriptors-only") {
             drawDescriptorWriteTests(device, recorder);
             std::cout << "Draw descriptor writes and snapshot overrides passed\n";
