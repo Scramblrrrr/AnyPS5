@@ -44,7 +44,7 @@ BufferPool::~BufferPool() {
     for (auto& [memory, block] : slabBlocks) freeBlock(*block);
 }
 
-VkDeviceMemory BufferPool::AllocateMemory(const Context& context, const VkMemoryAllocateInfo& allocation, const char* operation) {
+VkDeviceMemory BufferPool::AllocateMemory(const Context& context, const VkMemoryAllocateInfo& allocation, const char* operation, std::uint32_t allowedTypes, VkMemoryPropertyFlags requiredProperties) {
     const auto kind = (context.memory.memoryTypes[allocation.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0 ? GpuMemoryKind::HostBuffer : GpuMemoryKind::DeviceBuffer;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     auto result = AllocateGpuMemory(context, allocation, memory, kind, operation);
@@ -59,12 +59,28 @@ VkDeviceMemory BufferPool::AllocateMemory(const Context& context, const VkMemory
             ++attempts;
         }
     }
+    auto finalType = allocation.memoryTypeIndex;
+    const auto hostProperties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    if ((result == VK_ERROR_OUT_OF_DEVICE_MEMORY || result == VK_ERROR_OUT_OF_HOST_MEMORY) && (requiredProperties & hostProperties) == hostProperties) {
+        const auto originalHeap = context.memory.memoryTypes[allocation.memoryTypeIndex].heapIndex;
+        for (std::uint32_t type = 0; type < context.memory.memoryTypeCount; ++type) {
+            const auto& candidate = context.memory.memoryTypes[type];
+            if ((allowedTypes & (1u << type)) == 0u || (candidate.propertyFlags & requiredProperties) != requiredProperties || candidate.heapIndex == originalHeap) continue;
+            auto alternate = allocation;
+            alternate.memoryTypeIndex = type;
+            finalType = type;
+            memory = VK_NULL_HANDLE;
+            result = AllocateGpuMemory(context, alternate, memory, GpuMemoryKind::HostBuffer, operation);
+            ++attempts;
+            break;
+        }
+    }
     if (result == VK_SUCCESS) {
-        if (attempts == 2) std::fprintf(stderr, "[bufferpool] %s recovered: allocation=%llu reclaimed=%llu initialResult=%d attempts=%u\n", operation, static_cast<unsigned long long>(allocation.allocationSize), static_cast<unsigned long long>(reclaimed), static_cast<int>(initialResult), attempts);
+        if (attempts > 1) std::fprintf(stderr, "[bufferpool] %s recovered: allocation=%llu memoryType=%u originalType=%u reclaimed=%llu initialResult=%d attempts=%u\n", operation, static_cast<unsigned long long>(allocation.allocationSize), finalType, allocation.memoryTypeIndex, static_cast<unsigned long long>(reclaimed), static_cast<int>(initialResult), attempts);
         return memory;
     }
     char details[512];
-    std::snprintf(details, sizeof(details), "%s: allocation=%llu memoryType=%u reclaimed=%llu initialResult=%d attempts=%u", operation, static_cast<unsigned long long>(allocation.allocationSize), allocation.memoryTypeIndex, static_cast<unsigned long long>(reclaimed), static_cast<int>(initialResult), attempts);
+    std::snprintf(details, sizeof(details), "%s: allocation=%llu memoryType=%u originalType=%u reclaimed=%llu initialResult=%d attempts=%u", operation, static_cast<unsigned long long>(allocation.allocationSize), finalType, allocation.memoryTypeIndex, static_cast<unsigned long long>(reclaimed), static_cast<int>(initialResult), attempts);
     Check(result, details);
     return VK_NULL_HANDLE;
 }

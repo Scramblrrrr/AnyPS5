@@ -64,7 +64,7 @@ public:
     static VkBufferUsageFlags Usage(VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
     // A vkAllocateMemory counted as GPU memory (AllocateGpuMemory, a host or device buffer by the memory type), retried
     // once after a trim when out of memory; throws when it still fails.
-    VkDeviceMemory AllocateMemory(const Context& context, const VkMemoryAllocateInfo& allocation, const char* operation);
+    VkDeviceMemory AllocateMemory(const Context& context, const VkMemoryAllocateInfo& allocation, const char* operation, std::uint32_t allowedTypes = 0u, VkMemoryPropertyFlags requiredProperties = 0u);
     std::optional<BufferAllocation> Take(std::size_t bytes, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     void Put(const BufferAllocation& allocation) noexcept;
     static bool SlabEligible(std::size_t capacity, VkDeviceSize alignment, VkDeviceSize size, VkDeviceSize atom);
