@@ -178,6 +178,7 @@ VulkanDevice::PresentStatistics presentCounters{};
 // A compute dispatch's Vulkan objects, shared by every dispatch of the same compiled variant and
 // kept by the recorder until the batches using them completed (a Recipe references them weakly).
 struct ComputePipelineObjects {
+    std::uint64_t lastUse = 0;
     VkDevice device = VK_NULL_HANDLE;
     PFN_vkDestroyShaderModule destroyModule = nullptr;
     PFN_vkDestroyPipelineLayout destroyLayout = nullptr;
@@ -310,6 +311,7 @@ struct VulkanDevice::State {
     // references to its objects.
     std::mutex computePipelinesMutex;
     std::map<std::uint64_t, std::shared_ptr<ComputePipelineObjects>> computePipelines;
+    std::uint64_t computePipelineUse = 0;
     std::unique_ptr<Graphics::GpuColorTransfer> colorTransfer;
     std::shared_ptr<Graphics::BufferPool> bufferPool;
     std::unique_ptr<Graphics::Buffer> emptyBuffer;
@@ -3881,10 +3883,14 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
     // Pipelines are shared by dispatches of one compiled variant; descriptor set layouts built from the
     // same bindings are compatible, so the pipeline layout of the first dispatch serves them all.
     const std::uint64_t pipelineKey = shader.PipelineVariantId() != 0 ? (shader.PipelineVariantId() << 1u) | (pushStages != 0 ? 1u : 0u) : 0u;
+    static const bool localPipelineLru = std::getenv("APS5_LOCAL_COMPUTE_LRU") != nullptr;
     std::shared_ptr<ComputePipelineObjects> objects;
     if (pipelineKey != 0) {
         std::lock_guard pipelines(state->computePipelinesMutex);
-        if (const auto found = state->computePipelines.find(pipelineKey); found != state->computePipelines.end()) objects = found->second;
+        if (const auto found = state->computePipelines.find(pipelineKey); found != state->computePipelines.end()) {
+            objects = found->second;
+            if (localPipelineLru) objects->lastUse = ++state->computePipelineUse;
+        }
     }
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     auto& d = Dispatches();
@@ -4034,10 +4040,23 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
             std::size_t remaining = 0;
             {
                 std::lock_guard pipelines(state->computePipelinesMutex);
-                for (auto it = state->computePipelines.begin(); it != state->computePipelines.end() && state->computePipelines.size() >= localPipelineLimit;) {
-                    if (it->second.use_count() != 1) { ++it; continue; }
-                    retired.push_back(std::move(it->second));
-                    it = state->computePipelines.erase(it);
+                if (localPipelineLru) {
+                    while (state->computePipelines.size() >= localPipelineLimit) {
+                        auto oldest = state->computePipelines.end();
+                        for (auto it = state->computePipelines.begin(); it != state->computePipelines.end(); ++it) {
+                            if (it->second.use_count() != 1) continue;
+                            if (oldest == state->computePipelines.end() || it->second->lastUse < oldest->second->lastUse) oldest = it;
+                        }
+                        if (oldest == state->computePipelines.end()) break;
+                        retired.push_back(std::move(oldest->second));
+                        state->computePipelines.erase(oldest);
+                    }
+                } else {
+                    for (auto it = state->computePipelines.begin(); it != state->computePipelines.end() && state->computePipelines.size() >= localPipelineLimit;) {
+                        if (it->second.use_count() != 1) { ++it; continue; }
+                        retired.push_back(std::move(it->second));
+                        it = state->computePipelines.erase(it);
+                    }
                 }
                 remaining = state->computePipelines.size();
             }
@@ -4102,6 +4121,7 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
             // one too (this call's go with the batch that keeps them).
             std::lock_guard pipelines(state->computePipelinesMutex);
             objects = state->computePipelines.try_emplace(pipelineKey, objects).first->second;
+            if (localPipelineLru) objects->lastUse = ++state->computePipelineUse;
         }
         timer.phase(PhasePipeline);
     }
