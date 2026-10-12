@@ -199,10 +199,7 @@ void Driver::run(std::uint32_t id) noexcept {
                             });
                             queue0Dormant.store(false, std::memory_order_relaxed);
                             if (ready()) break;
-                            if (idleEpoch.load(std::memory_order_acquire) != idleEpochAtWait) {
-                                if (idleResultsPending()) continue;
-                                break;
-                            }
+                            if (idleEpoch.load(std::memory_order_acquire) != idleEpochAtWait) continue;
                             if (!idleResultsPending()) continue;
                         }
                         lock.unlock();
