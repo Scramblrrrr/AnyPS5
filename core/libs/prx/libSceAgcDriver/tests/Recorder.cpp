@@ -5665,6 +5665,11 @@ void Run(Context context) {
         image->WriteBack();
         AgcDriver::GuestMemory::ReadCommitted(address, std::as_writable_bytes(std::span(&pixel, 1)));
         Require(pixel == 0x9e9e9e9eu, "CPU write-back lost guest texels");
+        image->Refresh();
+        Require(readPixel() == 0x9e9e9e9eu, "untracked comparison baseline lost completed texels");
+        std::memset(reinterpret_cast<void*>(address), 0xab, SurfaceBytes);
+        image->Refresh();
+        Require(readPixel() == 0xababababu, "untracked comparison missed a synchronized CPU store before a flip");
         std::printf("%s snapshot fixture: direct %zu bytes, CPU fallback %zu bytes\n", watched ? "watched" : "unwatched", expectedBytes, image->OriginalSnapshotBytes());
     }
 }
