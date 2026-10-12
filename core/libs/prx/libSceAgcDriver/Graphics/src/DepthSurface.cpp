@@ -8,7 +8,6 @@
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "RdnaDecoder/include/RdnaDecoder/RdnaDescriptorFormat.hpp"
 #include <algorithm>
-#include <atomic>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -243,12 +242,17 @@ public:
     }
 
     std::shared_ptr<StorageTexture> Storage(std::span<const std::uint32_t> words, const GuestTextureResource& resource, std::uint32_t mip) {
-        if (resource.dimension != TextureDimension::k2D || resource.width != target.extent.width || resource.height != target.extent.height) return nullptr;
+        if (resource.width != target.extent.width || resource.height != target.extent.height) return nullptr;
         const bool stencil = target.stencilAddress != 0 && resource.baseAddress == target.stencilAddress;
         const bool d16 = target.format == VK_FORMAT_D16_UNORM || target.format == VK_FORMAT_D16_UNORM_S8_UINT;
         const auto expected = stencil ? VK_FORMAT_R8_UINT : d16 ? VK_FORMAT_R16_UNORM : VK_FORMAT_R32_SFLOAT;
         const bool depthBits = !stencil && words.size() >= 4 && ShaderRecompiler::DepthBitsTextureWidth(words[1], words[3]) == (d16 ? 16u : 32u);
         if (ResolveTextureFormat(resource.format) != expected && !depthBits) return nullptr;
+        if (resource.dimension != TextureDimension::k2D) {
+            char text[256];
+            std::snprintf(text, sizeof(text), "AGC graphics: storage image access to depth/stencil surface 0x%llx is not implemented (storage=%ux%u guest format=%u mip=%u dimension=%d tile=%d)", static_cast<unsigned long long>(resource.baseAddress), resource.width, resource.height, resource.format, mip, static_cast<int>(resource.dimension), static_cast<int>(resource.tileMode));
+            throw std::runtime_error(text);
+        }
         if (!stencil && hostFormat != target.format) {
             char text[224];
             std::snprintf(text, sizeof(text), "AGC graphics: storage image access to the depth plane of depth surface 0x%llx (vk format %d) stored as vk format %d is not implemented", static_cast<unsigned long long>(target.address), static_cast<int>(target.format), static_cast<int>(hostFormat));
@@ -261,7 +265,11 @@ public:
         }
         ApplyFastClear();
         auto& plane = stencil ? stencilPlane : depthPlane;
-        if (plane.storage == nullptr || plane.storage->Descriptor().format != resource.format || plane.storage->Descriptor().tileMode != resource.tileMode || plane.storage->Descriptor().baseAddress != resource.baseAddress) plane.storage = StorageTexture::Create(context, *context.detiler, resource, 0);
+        if (plane.storage == nullptr || plane.storage->Descriptor().format != resource.format || plane.storage->Descriptor().tileMode != resource.tileMode || plane.storage->Descriptor().baseAddress != resource.baseAddress) {
+            std::erase_if(plane.replaced, [](const auto& old) { return old.expired(); });
+            if (plane.storage != nullptr) plane.replaced.push_back(plane.storage);
+            plane.storage = StorageTexture::Create(context, *context.detiler, resource, 0);
+        }
         copyPlane(plane, stencil, true);
         return plane.storage;
     }
@@ -269,9 +277,14 @@ public:
     bool StoreBack(const StorageTexture& candidate) {
         for (const bool stencil : {false, true}) {
             auto& plane = stencil ? stencilPlane : depthPlane;
-            if (plane.storage.get() != &candidate) continue;
-            copyPlane(plane, stencil, false);
-            return true;
+            if (plane.storage.get() == &candidate) {
+                copyPlane(plane, stencil, false);
+                return true;
+            }
+            if (std::none_of(plane.replaced.begin(), plane.replaced.end(), [&](const auto& old) { return old.lock().get() == &candidate; })) continue;
+            char text[288];
+            std::snprintf(text, sizeof(text), "AGC graphics: storage image writes to the %s plane of depth surface 0x%llx through a view that another view of the plane (guest format %u, tile mode %d) replaced are not implemented", stencil ? "stencil" : "depth", static_cast<unsigned long long>(target.address), plane.storage->Descriptor().format, static_cast<int>(plane.storage->Descriptor().tileMode));
+            throw std::runtime_error(text);
         }
         return false;
     }
@@ -287,6 +300,7 @@ public:
 private:
     struct PlaneStorage {
         std::shared_ptr<StorageTexture> storage;
+        std::vector<std::weak_ptr<StorageTexture>> replaced;
         std::unique_ptr<DeviceBuffer> staging;
     };
     std::map<std::array<std::uint32_t, 12>, std::shared_ptr<Texture>> textures;
@@ -723,6 +737,7 @@ std::shared_ptr<Texture> DepthSurfaceTexture(const Context& context, std::span<c
     (*found)->ApplyFastClear();
     (*found)->TakeWrites();
     if (sampled) return (*found)->Sampled(words, resource, components);
+    Require((*found)->hostFormat == base.format, "sampling a depth plane that the device stores in another depth format is not implemented");
     const auto layers = cube ? 6u : layered ? resource.depthOrLastArray + 1u : 1u;
     if (!accepted) {
         char text[320];
