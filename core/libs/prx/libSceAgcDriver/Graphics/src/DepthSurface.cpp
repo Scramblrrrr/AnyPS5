@@ -174,6 +174,11 @@ std::vector<std::unique_ptr<DepthSurface>>& surfaces() {
     return *list;
 }
 
+std::set<std::pair<VkDevice, std::uint64_t>>& surfaceAddresses() {
+    static auto* addresses = new std::set<std::pair<VkDevice, std::uint64_t>>();
+    return *addresses;
+}
+
 std::set<std::uint64_t>& clearedHtiles() {
     static auto* cleared = new std::set<std::uint64_t>();
     return *cleared;
@@ -236,6 +241,8 @@ VkImageView DepthSurfaceView(const Context& context, const DepthTarget& target) 
         surface->ApplyFastClear();
         return surface->view;
     }
+    surfaceAddresses().emplace(context.device, target.address);
+    if (target.stencilAddress != 0) surfaceAddresses().emplace(context.device, target.stencilAddress);
     surfaces().push_back(std::make_unique<DepthSurface>(context, target));
     return surfaces().back()->view;
 }
@@ -262,10 +269,12 @@ void NoteHtileDepthClear(std::uint64_t htileAddress) {
 void ClearDepthSurfaces(VkDevice device) {
     std::lock_guard lock(surfacesMutex());
     std::erase_if(surfaces(), [&](const auto& surface) { return surface->context.device == device; });
+    std::erase_if(surfaceAddresses(), [&](const auto& entry) { return entry.first == device; });
 }
 
 std::shared_ptr<Texture> DepthSurfaceTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource, VkComponentMapping components) {
     std::lock_guard lock(surfacesMutex());
+    if (!surfaceAddresses().contains({context.device, resource.baseAddress})) return nullptr;
     const auto& list = surfaces();
     const auto found = std::find_if(list.rbegin(), list.rend(), [&](const auto& surface) {
         return surface->context.device == context.device && (surface->target.address == resource.baseAddress || (surface->target.stencilAddress != 0 && surface->target.stencilAddress == resource.baseAddress));

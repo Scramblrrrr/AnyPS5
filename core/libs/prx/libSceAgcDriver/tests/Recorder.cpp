@@ -4705,7 +4705,6 @@ void depthSurfaceProofTests(const Device& device, Recorder& recorder) {
     TextureCache cache(context);
     context.textureCache = &cache;
     const DepthTarget target{address, 0, {side, side}, VK_FORMAT_D32_SFLOAT, 1.0f, 0};
-    Require(DepthSurfaceView(context, target) != VK_NULL_HANDLE, "the depth surface has no view");
     ShaderRecompiler::RecompileResult program;
     ShaderRecompiler::DescriptorBinding binding;
     binding.kind = ShaderRecompiler::DescriptorKind::SampledImage;
@@ -4725,6 +4724,10 @@ void depthSurfaceProofTests(const Device& device, Recorder& recorder) {
         0u,
         0u,
     };
+    const auto resource = DecodeTextureResource(binding.guestDescriptor);
+    const VkComponentMapping identity{VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+    Require(DepthSurfaceTexture(context, binding.guestDescriptor, resource, identity) == nullptr, "an address without a depth surface must miss before creation");
+    Require(DepthSurfaceView(context, target) != VK_NULL_HANDLE, "the depth surface has no view");
     program.bindings.push_back(binding);
     const CompiledShader compute{ShaderRecompiler::ShaderStage::Compute, &program, 0};
     bool reusable = false;
@@ -4744,8 +4747,6 @@ void depthSurfaceProofTests(const Device& device, Recorder& recorder) {
         Require(proved[use], "a set sampling an unchanged depth surface failed its proof on use " + name);
         Require(reports[use].path == ShaderResources::ProofPath::Fast, "a set sampling an unchanged depth surface left the fast proof for the full walk on use " + name);
     }
-    const auto resource = DecodeTextureResource(binding.guestDescriptor);
-    const VkComponentMapping identity{VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
     const auto texture = DepthSurfaceTexture(context, binding.guestDescriptor, resource, identity);
     Require(texture != nullptr && DepthSurfaceHolds(context, resource, texture.get()), "a 2D depth lookup is not fast-provable");
     auto arrayed = resource;
