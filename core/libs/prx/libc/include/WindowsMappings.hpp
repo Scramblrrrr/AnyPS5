@@ -269,18 +269,34 @@ public:
                     settledEnd = to;
                 }
                 if (clear && !pinned && settled != 0) {
+                    std::uint8_t untracked = 0;
                     for (const auto alias : view.page->aliases) {
                         auto& other = views.at(alias);
                         const auto arming = static_cast<std::uint8_t>(settled & ~other.armed);
-                        if (!writable(other.protection) || arming == 0 || other.hostWrites != 0) continue;
+                        if (!writable(other.protection) || arming == 0) continue;
+                        if (other.hostWrites != 0) {
+                            untracked |= arming;
+                            continue;
+                        }
                         const DWORD protection = other.protection == PAGE_EXECUTE_READWRITE ? PAGE_EXECUTE_READ : PAGE_READONLY;
                         protectSubpages(alias, arming, protection, "arm shared memory write tracking");
                         other.armed |= arming;
                     }
+                    const auto tracked = static_cast<std::uint8_t>(settled & ~untracked);
+                    auto cleanFrom = cursor;
+                    auto cleanTo = cursor;
                     for (std::size_t sub = 0; sub < subpages; ++sub) {
-                        if (cursor <= base + sub * subpageBytes && base + (sub + 1) * subpageBytes <= settledEnd) view.seen[sub] = view.page->generation[sub];
+                        if ((tracked & (1u << sub)) == 0) continue;
+                        const auto from = std::max(cursor, base + sub * subpageBytes);
+                        const auto to = std::min(settledEnd, base + (sub + 1) * subpageBytes);
+                        if (from == base + sub * subpageBytes && to == base + (sub + 1) * subpageBytes) view.seen[sub] = view.page->generation[sub];
+                        if (from != cleanTo) {
+                            if (cleanFrom != cleanTo) rememberClean(cleanFrom, cleanTo);
+                            cleanFrom = from;
+                        }
+                        cleanTo = to;
                     }
-                    rememberClean(cursor, settledEnd);
+                    if (cleanFrom != cleanTo) rememberClean(cleanFrom, cleanTo);
                 }
                 if (full) return true;
                 cursor = stop;

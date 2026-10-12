@@ -1239,6 +1239,49 @@ static void CheckSharedWritePages() {
 #endif
 }
 
+static void CheckSharedWritesDuringHostWrite() {
+#ifdef _WIN32
+    constexpr std::size_t page = 0x4000;
+    constexpr std::size_t small = 0x1000;
+    std::int64_t phys = 0;
+    Require(sceKernelAllocateDirectMemory(0, 0x7fffffffffll, page, 0, 0, &phys) == 0);
+    void* first = nullptr;
+    void* second = nullptr;
+    Require(sceKernelMapDirectMemory(&first, page, 3, 0, phys, 0) == 0);
+    Require(sceKernelMapDirectMemory(&second, page, 3, 0, phys, 0) == 0);
+    auto* left = static_cast<volatile unsigned char*>(first);
+    auto* right = static_cast<volatile unsigned char*>(second);
+    const auto collect = [](void* address) {
+        std::array<void*, 32> pages{};
+        std::size_t count = pages.size();
+        Require(GuestArena::GuestArenaCollectWrites_nid_postfix(reinterpret_cast<std::uintptr_t>(address), page, pages.data(), &count, true));
+        std::vector<std::size_t> offsets;
+        for (std::size_t i = 0; i < count; ++i) offsets.push_back(reinterpret_cast<std::uintptr_t>(pages[i]) - reinterpret_cast<std::uintptr_t>(address));
+        return offsets;
+    };
+    const std::vector<std::size_t> open{small, small * 2};
+    collect(first);
+    collect(second);
+    Require(collect(first).empty() && collect(second).empty());
+    left[small] = 1;
+    auto* target = const_cast<unsigned char*>(left + small * 2);
+    Require(GuestArena::GuestArenaBeginHostWrite_nid_postfix(target, small));
+    Require(collect(first) == open);
+    Require(collect(second) == open);
+    left[small + 8] = 2;
+    Require(collect(first) == open);
+    Require(collect(second) == open);
+    GuestArena::GuestArenaEndHostWrite_nid_postfix(target, small);
+    Require(collect(first) == open && collect(second) == open);
+    Require(collect(first).empty() && collect(second).empty());
+    left[small + 16] = 3;
+    Require(right[small + 16] == 3 && collect(second) == std::vector<std::size_t>{small});
+    Require(sceKernelMunmap(first, page) == 0);
+    Require(sceKernelMunmap(second, page) == 0);
+    Require(sceKernelReleaseDirectMemory(phys, page) == 0);
+#endif
+}
+
 static void CheckFailedCollectKeepsWrites() {
 #ifdef _WIN32
     constexpr std::size_t page = 0x4000;
@@ -1842,6 +1885,7 @@ int main() {
     CheckArenaHonoursHintsWithoutGoingBelowThem();
     CheckSharedWriteTracking();
     CheckSharedWritePages();
+    CheckSharedWritesDuringHostWrite();
     CheckReadsIntoSharedWriteTracking();
     CheckPinnedSharedPages();
     CheckFailedCollectKeepsWrites();
