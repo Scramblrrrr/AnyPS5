@@ -199,6 +199,7 @@ static void QueuePadGrain(AudioOut2Context& context) {
 }
 
 static void Render(AudioOut2Context& context, const AudioOut2Grain& grain) {
+    const auto started = AudioOut2TraceEnabled() ? Clock::now() : Clock::time_point{};
     float* pad = nullptr;
     if (context.padDevice != 0) {
         std::fill(context.padMix.begin(), context.padMix.end(), 0.0f);
@@ -214,6 +215,7 @@ static void Render(AudioOut2Context& context, const AudioOut2Grain& grain) {
         AudioOut2FinishPadMix(pad, context.grain);
         QueuePadGrain(context);
     }
+    if (AudioOut2TraceEnabled()) context.summaryRenderMs = std::max(context.summaryRenderMs, std::chrono::duration<double, std::milli>(Clock::now() - started).count());
 }
 
 static void DeviceCallback(void* userdata, Uint8* stream, int length) {
@@ -254,6 +256,7 @@ static void TraceSummary(AudioOut2Context& context, Clock::time_point now) {
     }
     const auto elapsed = std::chrono::duration<double>(now - context.summaryStart).count();
     if (elapsed < 1.0) return;
+    const auto printStarted = Clock::now();
     std::fprintf(stderr, "[audioout2] t=%.3f ctx %p: %.1f pushes/s, %.1f advances/s, %.1f queue polls/s, hw queue %u/%u, unread %u ms, mix peak %.3f; totals: pushes %llu (%llu blocking, %llu queue-full rejects), primes %llu, dropped %llu\n",
         AudioOut2TraceSeconds(), static_cast<void*>(&context), static_cast<double>(context.summaryPushes) / elapsed, static_cast<double>(context.summaryAdvances) / elapsed,
         static_cast<double>(context.summaryPolls) / elapsed, QueueLevel(context, now), context.queueDepth, PendingMs(context), static_cast<double>(context.summaryPeak),
@@ -263,6 +266,12 @@ static void TraceSummary(AudioOut2Context& context, Clock::time_point now) {
     std::fprintf(stderr, "[audioout2-callback] t=%.3f ctx %p: %.1f calls/s, max start gap %.2f ms, max context-lock wait %.2f ms; total start gaps over 50 ms %llu\n",
         AudioOut2TraceSeconds(), static_cast<void*>(&context), static_cast<double>(context.summaryCallbacks) / elapsed,
         context.summaryCallbackGapMs, context.summaryCallbackLockMs, static_cast<unsigned long long>(context.lateCallbacks));
+    std::fprintf(stderr, "[audioout2-work] t=%.3f ctx %p: max render %.2f ms, max capture %.2f ms, max pad probe %.2f ms, previous summary print %.2f ms\n",
+        AudioOut2TraceSeconds(), static_cast<void*>(&context), context.summaryRenderMs, context.summaryCaptureMs, context.summaryPadProbeMs, context.summaryPrintMs);
+    context.summaryRenderMs = 0.0;
+    context.summaryCaptureMs = 0.0;
+    context.summaryPadProbeMs = 0.0;
+    context.summaryPrintMs = std::chrono::duration<double, std::milli>(Clock::now() - printStarted).count();
     context.summaryCallbacks = 0;
     context.summaryCallbackGapMs = 0.0;
     context.summaryCallbackLockMs = 0.0;
@@ -350,8 +359,14 @@ int APS5_VABI sceAudioOut2ContextPush(AudioOut2ContextHandle ctx, uint32_t block
     }
     context->queued++;
     context->playHead += GrainDuration(*context);
+    const auto padStarted = AudioOut2TraceEnabled() ? Clock::now() : Clock::time_point{};
     UpdatePadDevice(*context, now);
+    const auto captureStarted = AudioOut2TraceEnabled() ? Clock::now() : Clock::time_point{};
     auto grain = AudioOut2CaptureGrain(*context);
+    if (AudioOut2TraceEnabled()) {
+        context->summaryPadProbeMs = std::max(context->summaryPadProbeMs, std::chrono::duration<double, std::milli>(captureStarted - padStarted).count());
+        context->summaryCaptureMs = std::max(context->summaryCaptureMs, std::chrono::duration<double, std::milli>(Clock::now() - captureStarted).count());
+    }
     const auto mixed = static_cast<std::uint32_t>(grain.size());
     if (context->device == 0) {
         Render(*context, grain);

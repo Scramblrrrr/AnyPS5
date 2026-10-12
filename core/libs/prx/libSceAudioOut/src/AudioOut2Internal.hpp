@@ -105,6 +105,10 @@ struct AudioOut2Context {
     std::uint64_t lateCallbacks = 0;
     double summaryCallbackGapMs = 0.0;
     double summaryCallbackLockMs = 0.0;
+    double summaryRenderMs = 0.0;
+    double summaryCaptureMs = 0.0;
+    double summaryPadProbeMs = 0.0;
+    double summaryPrintMs = 0.0;
     std::chrono::steady_clock::time_point lastCallbackStart;
     std::uint64_t summaryPushes = 0;
     std::uint64_t summaryAdvances = 0;
