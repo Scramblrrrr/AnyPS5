@@ -2192,8 +2192,9 @@ void SetHostImportWindow(std::uint64_t bytes) {
     importWindow.store(bytes, std::memory_order_relaxed);
 }
 
-const HostImport* HostImportFor(const Context& context, std::uint64_t address, std::size_t bytes) {
+const HostImport* HostImportFor(const Context& context, std::uint64_t address, std::size_t bytes, bool settleHeldLabels) {
     if (context.hostImportAlignment == 0 || bytes == 0 || bytes > std::numeric_limits<std::uint64_t>::max() - address) return nullptr;
+    if (settleHeldLabels) SettleHeldLabels(address, bytes);
     ensurePinWaiter();
     auto& state = Imports();
     std::lock_guard lock(state.mutex);
@@ -3179,6 +3180,8 @@ void GuestBufferMemory::UploadFinish(bool addressable) {
         for (const auto& region : space->base) CompletePendingCpuWrites(context, region.begin, static_cast<std::size_t>(region.end - region.begin));
     }
     uploaded = true;
+    static const bool settleAddressBuilds = std::getenv("APS5_NO_SETTLE_ADDRESS_BUILDS") == nullptr;
+    if (settleAddressBuilds && (!lease.empty() || space != nullptr)) SettleAllHeldLabels();
     for (const auto& [begin, end] : writes) StorageTexture::FlushPending(begin, static_cast<std::size_t>(end - begin), nullptr, "written buffer range");
     if (context.hostImportAlignment != 0) {
         auto& state = Imports();
@@ -3268,6 +3271,7 @@ void GuestBufferMemory::UploadFinish(bool addressable) {
             if (bound) continue;
         }
         bool copyOnGpu = false;
+        if (context.hostImportAlignment != 0) SettleHeldLabels(region.begin, static_cast<std::size_t>(bytes));
         if (context.hostImportAlignment != 0) {
             auto& state = Imports();
             std::lock_guard lock(state.mutex);
