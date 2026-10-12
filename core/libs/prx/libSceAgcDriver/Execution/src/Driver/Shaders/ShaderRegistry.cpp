@@ -23,6 +23,7 @@
 #include <list>
 #include <pthread.h>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include "RdnaDecoder/RdnaInstructionDecoder.hpp"
 
@@ -321,7 +322,19 @@ std::shared_ptr<const ShaderSnapshot> RegisteredProgram(const ShaderRegistry& re
         require(result == nullptr || result->type == snapshot->type, "registered program has ambiguous shader binary types");
         result = snapshot;
     }
-    require(!registered || result != nullptr, "registered program refers to an incompatible shader binary type");
+    if (registered && result == nullptr) {
+        char location[32];
+        std::snprintf(location, sizeof(location), "0x%llx", static_cast<unsigned long long>(address));
+        std::string detail = "registered program refers to an incompatible shader binary type at ";
+        detail += location;
+        detail += "; registered types:";
+        for (const auto& snapshot : found->second) {
+            if (address - snapshot->codeAddress < snapshot->code.size() * sizeof(std::uint32_t)) detail += " " + std::to_string(snapshot->type);
+        }
+        detail += "; expected types:";
+        for (const auto type : types) detail += " " + std::to_string(type);
+        require(false, detail.c_str());
+    }
     return result;
 }
 
