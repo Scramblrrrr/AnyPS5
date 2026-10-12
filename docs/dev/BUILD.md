@@ -95,7 +95,7 @@ Set `APS5_PIPELINE_STATS=1` to capture and print driver statistics for each newl
 
 ## Dispatch diagnostics
 
-Set `APS5_TRACE_BAD_DISPATCH=1` to report the original argument address, CPU fallback reason, resource-key match and resulting group counts when a dispatch exceeds the device's group limits. An argument address of zero identifies a direct dispatch. The diagnostic does not change dispatch validation or splitting.
+Set `APS5_TRACE_BAD_DISPATCH=1` to report the original argument address, CPU fallback reason, resource-key match and resulting group counts when a dispatch exceeds the device's group limits. An argument address of zero identifies direct input to the Vulkan dispatch path; an indirect command may already have been resolved into that input. A failed indirect command also reports its original argument address, initiator, queue and opcode. The diagnostic does not change dispatch validation or splitting.
 
 ## Worker sampler
 

@@ -27,29 +27,35 @@ void Driver::dispatchIndirect(QueueState& queue, std::span<const std::uint32_t> 
     static const bool gpuIndirect = std::getenv("APS5_NO_GPU_INDIRECT") == nullptr;
     const auto arguments = Pm4::DispatchArgumentAddress(packet, queue);
     const auto initiator = packet.back();
-    int path = IndirectGpu;
-    if (!gpuIndirect) path = IndirectDisabled;
-    else if ((initiator & 0x20u) != 0) path = IndirectThreadDimensions;
-    else if (arguments % 4 != 0) path = IndirectMisaligned;
-    if (path != IndirectGpu) {
-        if (!resolvingAhead()) {
-            const auto& resolved = resolvedAhead();
-            if (const auto found = resolved.find(currentPacketOffset()); found != resolved.end() && found->second.indirectArguments == 0 && found->second.packet[0] == 0xc0031500u) {
-                const auto direct = found->second.packet;
-                dispatch(queue, direct, submission);
-                return;
+    try {
+        int path = IndirectGpu;
+        if (!gpuIndirect) path = IndirectDisabled;
+        else if ((initiator & 0x20u) != 0) path = IndirectThreadDimensions;
+        else if (arguments % 4 != 0) path = IndirectMisaligned;
+        if (path != IndirectGpu) {
+            if (!resolvingAhead()) {
+                const auto& resolved = resolvedAhead();
+                if (const auto found = resolved.find(currentPacketOffset()); found != resolved.end() && found->second.indirectArguments == 0 && found->second.packet[0] == 0xc0031500u) {
+                    const auto direct = found->second.packet;
+                    dispatch(queue, direct, submission);
+                    return;
+                }
             }
+            recordQueuedLabelsBeforeRead(submission.queue);
+            const auto readStart = std::chrono::steady_clock::now();
+            const auto direct = Pm4::ReadDispatchArguments(arguments, initiator);
+            countIndirect(path, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - readStart).count());
+            dispatch(queue, direct, submission);
+            return;
         }
-        recordQueuedLabelsBeforeRead(submission.queue);
-        const auto readStart = std::chrono::steady_clock::now();
-        const auto direct = Pm4::ReadDispatchArguments(arguments, initiator);
-        countIndirect(path, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - readStart).count());
-        dispatch(queue, direct, submission);
-        return;
-    }
 
-    const std::array<std::uint32_t, 5> unresolved{0xc0031500u, 0, 0, 0, initiator};
-    dispatch(queue, unresolved, submission, arguments);
+        const std::array<std::uint32_t, 5> unresolved{0xc0031500u, 0, 0, 0, initiator};
+        dispatch(queue, unresolved, submission, arguments);
+    } catch (...) {
+        static const bool traceBadDispatch = std::getenv("APS5_TRACE_BAD_DISPATCH") != nullptr;
+        if (traceBadDispatch) std::fprintf(stderr, "[indirect-dispatch-failure] original arguments 0x%llx initiator 0x%x queue 0x%x packet opcode 0x%x\n", static_cast<unsigned long long>(arguments), initiator, submission.queue, (packet[0] >> 8u) & 0xffu);
+        throw;
+    }
 }
 
 }
