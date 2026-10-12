@@ -325,6 +325,43 @@ void CheckLargeCollectMemo() {
     Require(CollectWrites(base, 4096) == 0, "an unwatch left a wider memo entry usable");
 }
 
+void CheckEpochCollectMap() {
+    if (std::getenv("APS5_LOCAL_EPOCH_COLLECT_MAP") == nullptr || std::getenv("APS5_NO_COLLECT_MEMO") != nullptr || std::getenv("APS5_SHARED_COLLECT_MEMO") != nullptr) return;
+    constexpr std::size_t ranges = 600;
+    constexpr std::size_t bytes = ranges * Block;
+    auto* memory = static_cast<std::uint8_t*>(AllocateWatched(bytes));
+    struct Cleanup {
+        void* memory;
+        ~Cleanup() {
+#ifdef _WIN32
+            GuestArena::GuestArenaReset_nid_postfix(memory, bytes);
+            GuestArena::GuestArenaRelease_nid_postfix(memory, bytes);
+#else
+            Unwatch(reinterpret_cast<std::uint64_t>(memory), bytes);
+            munmap(memory, bytes);
+#endif
+        }
+    } cleanup{memory};
+    const auto base = reinterpret_cast<std::uint64_t>(memory);
+    std::memset(memory, 17, bytes);
+    BumpCollectEpoch();
+    for (std::size_t index = 0; index < ranges; ++index) Require(CollectWrites(base + index * Block, 4096) != 0, "an indexed collect lost watched coverage");
+    const auto collected = TrackerGeneration();
+    for (std::size_t index = 0; index < ranges; ++index) Require(CollectWrites(base + index * Block + 7, 16) == collected, "an indexed collect walked again after ring eviction");
+    const auto stored = MarkWritten(base + 7, 1);
+    Require(CollectWrites(base, 4096) >= stored, "an indexed hit returned a stale generation");
+    memory[Block] ^= 1;
+    const auto beforeGrowth = TrackerGeneration();
+    Require(CollectWrites(base, Block + 4096) > beforeGrowth && !UnchangedSince(base + Block, 4096, beforeGrowth), "a shorter indexed range hid a write in its extension");
+    const auto expanded = TrackerGeneration();
+    Require(CollectWrites(base, Block + 4096) == expanded, "an expanded indexed range was not retained");
+    memory[0] ^= 1;
+    BumpCollectEpoch();
+    Require(CollectWrites(base, 4096) > expanded && !UnchangedSince(base, 4096, expanded), "an indexed hit survived its epoch");
+    Unwatch(base, Block);
+    Require(CollectWrites(base, 4096) == 0, "an indexed hit survived unwatch");
+}
+
 void CheckCollectBoundaries() {
     constexpr std::size_t bytes = 3 * Block;
     auto* memory = static_cast<std::uint8_t*>(AllocateWatched(bytes));
@@ -395,6 +432,7 @@ int main() {
 #endif
         CheckVersionRanges();
         CheckLargeCollectMemo();
+        CheckEpochCollectMap();
         CheckCollectBoundaries();
     } catch (const std::exception& error) {
         std::cerr << "write tracking test failed: " << error.what() << "\n";
