@@ -73,6 +73,7 @@ public:
     VkDeviceSize PutSlot(VkDeviceMemory memory, VkDeviceSize offset) noexcept;
     std::size_t SlabBlocks();
     VkDeviceSize Trim() noexcept;
+    VkDeviceSize TrimRetained() { return trim(); }
     std::pair<VkDeviceSize, VkDeviceSize> RetainedBytes();
 
 private:

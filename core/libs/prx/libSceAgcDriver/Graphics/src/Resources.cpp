@@ -30,7 +30,7 @@ void AllocateImageMemory(const Context& context, const VkMemoryAllocateInfo& all
     auto result = allocate(memory);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY || result == VK_ERROR_OUT_OF_HOST_MEMORY) {
         const auto initial = result;
-        const auto pooled = GetBufferPool(context)->Trim();
+        const auto pooled = GetBufferPool(context)->TrimRetained();
         *memory = VK_NULL_HANDLE;
         result = allocate(memory);
         std::fprintf(stderr, "[gpu] %s %s after out-of-memory %d: allocation=%llu, trimmed %llu pooled buffer bytes\n", operation, result == VK_SUCCESS ? "recovered" : "still failed", static_cast<int>(initial), static_cast<unsigned long long>(allocation.allocationSize), static_cast<unsigned long long>(pooled));
