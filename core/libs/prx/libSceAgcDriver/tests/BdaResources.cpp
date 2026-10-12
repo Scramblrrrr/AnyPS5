@@ -187,9 +187,60 @@ void importWindowTests(const Context& context) {
     ::operator delete(block, std::align_val_t{window});
 }
 
-// A registered range larger than the import window, its first window imported by an earlier access: an address-based
-// build (AcquireRegistered) must import the whole range, so a view in its last window binds (Demon's Souls threw
-// "guest buffer view ... exceeds its GPU owner" with the 64 MiB windows).
+class WindowedRange {
+public:
+    WindowedRange(const Context& context, std::size_t window, std::size_t cells, std::uint64_t budget) : window(window), bytes(window * cells), importing(context) {
+        block = ::operator new(bytes, std::align_val_t{piece});
+        std::memset(block, 0x33, bytes);
+        importing.hostImportAlignment = piece;
+        SetHostImportWindow(window);
+        SetHostImportBudget(budget);
+        change(true);
+    }
+    ~WindowedRange() {
+        change(false);
+        SetHostImportBudget(0);
+        SetHostImportWindow(0);
+        ::operator delete(block, std::align_val_t{piece});
+    }
+    WindowedRange(const WindowedRange&) = delete;
+    WindowedRange& operator=(const WindowedRange&) = delete;
+
+    std::uintptr_t First() const { return reinterpret_cast<std::uintptr_t>(block); }
+
+    static constexpr std::size_t piece = 65536;
+    const std::size_t window;
+    const std::size_t bytes;
+    Context importing;
+
+private:
+    void change(bool add) {
+        auto* mutation = GuestAllocations::GuestAllocationsBegin_nid_postfix();
+        if (add) GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, block, bytes, true, false, true);
+        else GuestAllocations::GuestAllocationsRemove_nid_postfix(mutation, block);
+        GuestAllocations::GuestAllocationsEnd_nid_postfix(mutation);
+    }
+
+    void* block = nullptr;
+};
+
+void importRefusedWholeRangeTests(const Context& context) {
+    WindowedRange range(context, 2 * WindowedRange::piece, 4, 3 * 2 * WindowedRange::piece);
+    const auto first = range.First();
+    const auto* windowed = HostImportFor(range.importing, first + 16, 32);
+    Require(windowed != nullptr && windowed->bytes == range.window, "the first window of a range over the budget was not imported");
+    const auto buffer = windowed->buffer;
+    for (int build = 0; build < 3; ++build) {
+        GuestBufferMemory leased(range.importing);
+        leased.AcquireRegistered();
+        leased.Upload(true);
+        leased.WriteBack();
+        Require(HostImportCovers(range.importing, first + 16, 32), "an address-based build refused its whole-range import and retired the range's window (build " + std::to_string(build) + ")");
+    }
+    const auto* kept = HostImportFor(range.importing, first + 16, 32);
+    Require(kept != nullptr && kept->buffer == buffer, "the range's window was imported again after a refused whole-range import");
+}
+
 void importWholeRangeOverWindowTests(const Context& context) {
     // The window of one large range (APS5_HOST_IMPORT_WINDOW_MIB, 64 MiB by default; read once per process).
     constexpr std::size_t piece = 65536;
@@ -1447,6 +1498,7 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     spaceImportRunTests(context);
     importWindowTests(context);
     importWholeRangeOverWindowTests(context);
+    importRefusedWholeRangeTests(context);
     importReliefTests(context);
     importJoinTests(context);
     heapMirrorTests(context, access);

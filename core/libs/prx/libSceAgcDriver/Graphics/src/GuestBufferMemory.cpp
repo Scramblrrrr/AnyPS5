@@ -712,6 +712,14 @@ bool evictable(const HostImports& state, const HostImport& entry) {
     return !pointerHeld(state, entry) && entry.lastUse + protectedUses < state.useCounter;
 }
 
+std::uint64_t evictableBytes(const HostImports& state, std::uint64_t begin, std::uint64_t end) {
+    std::uint64_t bytes = 0;
+    for (const auto& [base, entry] : state.imports) {
+        if ((entry.base + entry.bytes <= begin || entry.base >= end) && evictable(state, entry)) bytes += entry.bytes;
+    }
+    return bytes;
+}
+
 std::uint64_t retireLeastRecent(const Context& context, HostImports& state, const GuestAllocations::Lease& lease, std::uint64_t wanted) {
     std::uint64_t freed = 0;
     while (freed < wanted) {
@@ -738,7 +746,10 @@ std::uint64_t physicalMemoryBytes() {
 #endif
 }
 
+std::atomic<std::uint64_t> budgetOverride{0};
+
 std::uint64_t configuredBudget() {
+    if (const auto set = budgetOverride.load(std::memory_order_relaxed); set != 0) return set;
     static const std::uint64_t budget = []() -> std::uint64_t {
         const char* value = std::getenv("APS5_HOST_IMPORT_MIB");
         if (value != nullptr) return std::strtoull(value, nullptr, 10) << 20u;
@@ -812,30 +823,22 @@ const HostImport* importRunAt(const Context& context, HostImports& state, Import
         failures.insert_or_assign(base, ImportFailure{base, bytes, GuestAllocations::Mapped(run.ranges.begin(), run.ranges.end())});
         return nullptr;
     }
-    if (const auto found = state.imports.find(base); found != state.imports.end()) {
-        if (sameRun(found->second, run)) return &found->second;
-        if (!joined && pointerHeld(state, found->second)) return nullptr;
-        retireImport(context.device, state, found, lease);
-    }
-    for (auto it = state.imports.lower_bound(base); it != state.imports.end() && it->first < base + bytes; ++it) {
-        if (!joined && pointerHeld(state, it->second)) return nullptr;
-    }
-    if (auto it = state.imports.lower_bound(base); !joined && it != state.imports.begin() && std::prev(it)->second.base + std::prev(it)->second.bytes > base && pointerHeld(state, std::prev(it)->second)) return nullptr;
-    for (auto it = state.imports.lower_bound(base); it != state.imports.end() && it->first < base + bytes;) {
-        const auto next = std::next(it);
-        retireImport(context.device, state, it, lease);
-        it = next;
-    }
-    if (auto it = state.imports.lower_bound(base); it != state.imports.begin() && std::prev(it)->second.base + std::prev(it)->second.bytes > base) retireImport(context.device, state, std::prev(it), lease);
+    if (const auto found = state.imports.find(base); found != state.imports.end() && sameRun(found->second, run)) return &found->second;
     if (alignment == 0 || base % alignment != 0 || bytes % alignment != 0) return nullptr;
     if (const auto failed = failures.find(base); failed != failures.end()) {
         if (sameRun(failed->second, run)) return nullptr;
         failures.erase(failed);
     }
+    auto first = state.imports.lower_bound(base);
+    if (first != state.imports.begin() && std::prev(first)->second.base + std::prev(first)->second.bytes > base) --first;
+    std::uint64_t replaced = 0;
+    for (auto it = first; it != state.imports.end() && it->first < base + bytes; ++it) {
+        if (!joined && pointerHeld(state, it->second)) return nullptr;
+        replaced += it->second.bytes;
+    }
     const auto budget = importBudget(context, state);
-    if (evict && state.liveBytes + bytes > budget) retireLeastRecent(context, state, lease, state.liveBytes + bytes - budget);
-    const auto live = state.liveBytes;
-    if (live + bytes > budget) {
+    const auto live = state.liveBytes - replaced;
+    if (live + bytes > budget && (!evict || live + bytes - evictableBytes(state, base, base + bytes) > budget)) {
         // A refused import turns every later use of the range into CPU copies, so say so.
         static std::uint64_t refused = 0, refusedBytes = 0;
         static auto lastReport = std::chrono::steady_clock::now() - std::chrono::seconds(60);
@@ -843,10 +846,16 @@ const HostImport* importRunAt(const Context& context, HostImports& state, Import
         refusedBytes += bytes;
         if (std::chrono::steady_clock::now() - lastReport > std::chrono::seconds(10)) {
             lastReport = std::chrono::steady_clock::now();
-            std::fprintf(stderr, "[gpu] host import budget: %llu MiB live of %llu MiB (APS5_HOST_IMPORT_MIB); %llu imports (%llu MiB) refused so far, last 0x%llx+0x%llx\n", static_cast<unsigned long long>(live >> 20u), static_cast<unsigned long long>(budget >> 20u), static_cast<unsigned long long>(refused), static_cast<unsigned long long>(refusedBytes >> 20u), static_cast<unsigned long long>(base), static_cast<unsigned long long>(bytes));
+            std::fprintf(stderr, "[gpu] host import budget: %llu MiB live of %llu MiB (APS5_HOST_IMPORT_MIB); %llu imports (%llu MiB) refused so far, last 0x%llx+0x%llx\n", static_cast<unsigned long long>(state.liveBytes >> 20u), static_cast<unsigned long long>(budget >> 20u), static_cast<unsigned long long>(refused), static_cast<unsigned long long>(refusedBytes >> 20u), static_cast<unsigned long long>(base), static_cast<unsigned long long>(bytes));
         }
         return nullptr;
     }
+    for (auto it = first; it != state.imports.end() && it->first < base + bytes;) {
+        const auto next = std::next(it);
+        retireImport(context.device, state, it, lease);
+        it = next;
+    }
+    if (evict && state.liveBytes + bytes > budget) retireLeastRecent(context, state, lease, state.liveBytes + bytes - budget);
     HostImport entry{base, bytes, VK_NULL_HANDLE, VK_NULL_HANDLE, 0};
     entry.range = run.ranges.front();
     entry.ranges = std::move(run.ranges);
@@ -2204,6 +2213,10 @@ void SetImportWatch(const Context& context, ImportWatch watch) {
 
 void SetHostImportWindow(std::uint64_t bytes) {
     importWindow.store(bytes, std::memory_order_relaxed);
+}
+
+void SetHostImportBudget(std::uint64_t bytes) {
+    budgetOverride.store(bytes, std::memory_order_relaxed);
 }
 
 const HostImport* HostImportFor(const Context& context, std::uint64_t address, std::size_t bytes, bool settleHeldLabels) {
