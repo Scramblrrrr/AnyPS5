@@ -42,6 +42,7 @@
 #include "Optimization/include/Optimization/SrtWalker.hpp"
 #include "Optimization/include/Optimization/SsaBuilder.hpp"
 #include "Optimization/include/Optimization/TessellationLowering.hpp"
+#include "SpirvBackend/include/SpirvBackend/SpirvAnalysis.hpp"
 #include "SpirvBackend/include/SpirvBackend/SpirvEmitter.hpp"
 #if ANYPS5_ENABLE_SPIRV_TOOLS
 #include "SpirvBackend/SpirvOptimizer.hpp"
@@ -95,6 +96,18 @@ std::uint32_t HostSubgroupSize(const RecompileRequest& request) {
         if (list.find(address) != std::string::npos) return 64u;
     }
     return request.target.subgroupSize;
+}
+
+bool RunsWave64OneLane(const RecompileRequest& request, const IrProgram& program, const ShaderStageInputInfo& inputInfo) {
+    if (request.shader.stage != ShaderStage::Compute || inputInfo.compute == nullptr || program.WaveSize() != 64u || inputInfo.compute->hostSubgroupSize != 32u) return false;
+    static const bool twoLanes = std::getenv("APS5_TWO_LANE") != nullptr;
+    if (twoLanes) return false;
+    const auto& threads = inputInfo.compute->threadsNum;
+    IrOpcode blocker = IrOpcode::Void;
+    const auto rejection = Wave64OneLaneRejection(program, std::max(threads[0], 1u) * std::max(threads[1], 1u) * std::max(threads[2], 1u), request.target.supportedCapabilities, &blocker);
+    static const bool log = std::getenv("APS5_WAVE64_LAYOUT_LOG") != nullptr;
+    if (log) std::fprintf(stderr, "[wave64] 0x%llx %s%s%s\n", static_cast<unsigned long long>(request.shader.codeAddress), OneLaneRejectionName(rejection), blocker == IrOpcode::Void ? "" : ", at ", blocker == IrOpcode::Void ? "" : std::string(IrOpcodeName(blocker)).c_str());
+    return rejection == OneLaneRejection::None;
 }
 
 RdnaProgram DecodeStageProgram(ShaderStageKind stage, std::span<const std::uint32_t> code) {
@@ -440,17 +453,27 @@ CompiledVariant compileVariant(const RecompileRequest& request, IrProgram progra
     targetOptions.narrowSubgroupClock = request.target.narrowSubgroupClock;
     targetOptions.float64DenormPreserve = request.target.float64DenormPreserve;
 
+    ShaderStageInputInfo emitInputInfo = inputInfo;
+    ShaderComputeInputInfo oneLaneCompute{};
+    std::uint32_t hostSubgroupSize = HostSubgroupSize(request);
+    if (RunsWave64OneLane(request, program, inputInfo)) {
+        oneLaneCompute = *inputInfo.compute;
+        oneLaneCompute.hostSubgroupSize = 64u;
+        emitInputInfo.compute = &oneLaneCompute;
+        hostSubgroupSize = 64u;
+    }
+
     constexpr SpirvEmitter spirvEmitter;
     CompiledShaderArtifact result;
     result.variantId = nextVariantId();
-    result.spirv = spirvEmitter.Emit(program, inputInfo, bindings, targetOptions);
+    result.spirv = spirvEmitter.Emit(program, emitInputInfo, bindings, targetOptions);
 
     result.bdaAbiVersion = program.Info().usesDma || program.Info().usesFaultBuffer ? request.target.bdaAbiVersion : 0u;
     result.memoryOffsetDword = bindings.layout.memoryOffsetDword;
     result.shaderDataDwords = bindings.layout.ShaderDataDwords();
     result.imageMetadataDword = bindings.layout.ImageMetadataDword();
     result.runtimeImageCount = bindings.layout.runtimeImageCount;
-    result.hostSubgroupSize = HostSubgroupSize(request);
+    result.hostSubgroupSize = hostSubgroupSize;
     result.vertexOffsetSgpr = program.Info().vertexOffsetSgpr;
     result.instanceOffsetSgpr = program.Info().instanceOffsetSgpr;
     result.vertexOffsetShared = program.Info().vertexOffsetShared;
