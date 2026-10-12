@@ -1617,11 +1617,13 @@ const void* ThreadToken() {
     thread_local char token;
     return &token;
 }
+
+std::atomic<std::uint64_t> gpuHoldSerial{0};
 }
 
 void GpuMutexType::acquired() {
     owner.store(ThreadToken(), std::memory_order_relaxed);
-    ++depth;
+    if (++depth == 1) gpuHoldSerial.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool GpuMutexType::try_lock() {
@@ -1650,6 +1652,10 @@ std::atomic<void (*)()> gpuUnlockHook{nullptr};
 
 void SetGpuUnlockHook(void (*hook)()) {
     gpuUnlockHook.store(hook, std::memory_order_release);
+}
+
+std::uint64_t GpuHoldSerial() {
+    return gpuHoldSerial.load(std::memory_order_relaxed);
 }
 
 void GpuMutexType::unlock() {
