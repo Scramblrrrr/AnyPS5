@@ -4091,7 +4091,7 @@ VulkanDevice::IndirectOutcome VulkanDevice::dispatch(const ShaderRecompiler::Rec
             const auto path = capture.Write(directory);
             std::fprintf(stderr, "[compute-capture] %s\n", path.string().c_str());
         }
-        if (profile && shader.spirv.size() > 100000) std::fprintf(stderr, "[dispatch] creating a pipeline for %zu SPIR-V words (program 0x%llx)\n", shader.spirv.size(), static_cast<unsigned long long>(programAddress));
+        if (profile && shader.spirv.size() > 100000) std::fprintf(stderr, "[dispatch] creating a pipeline for %zu SPIR-V words (program 0x%llx) key=0x%llx\n", shader.spirv.size(), static_cast<unsigned long long>(programAddress), static_cast<unsigned long long>(pipelineKey));
         CreateComputePipeline(state->device, state->DeviceFunction<PFN_vkCreateComputePipelines>("vkCreateComputePipelines"), context.pipelineCache, objects->module, objects->layout, pipelineFlags, 0, specialization.Info(), subgroupSize, &objects->pipeline);
         objects->destroyModule(objects->device, objects->module, nullptr);
         objects->module = VK_NULL_HANDLE;
