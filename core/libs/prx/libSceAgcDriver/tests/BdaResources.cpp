@@ -193,14 +193,14 @@ public:
         block = ::operator new(bytes, std::align_val_t{piece});
         std::memset(block, 0x33, bytes);
         importing.hostImportAlignment = piece;
-        SetHostImportWindow(window);
+        SetHostImportRangeWindow(window);
         SetHostImportBudget(budget);
         change(true);
     }
     ~WindowedRange() {
         change(false);
         SetHostImportBudget(0);
-        SetHostImportWindow(0);
+        SetHostImportRangeWindow(std::uint64_t{64} << 20u);
         ::operator delete(block, std::align_val_t{piece});
     }
     WindowedRange(const WindowedRange&) = delete;

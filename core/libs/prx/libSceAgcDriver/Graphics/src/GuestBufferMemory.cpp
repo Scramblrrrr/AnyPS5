@@ -747,6 +747,10 @@ std::uint64_t physicalMemoryBytes() {
 }
 
 std::atomic<std::uint64_t> budgetOverride{0};
+std::atomic<std::uint64_t> rangeImportWindow{[] {
+    const char* value = std::getenv("APS5_HOST_IMPORT_WINDOW_MIB");
+    return (value ? std::strtoull(value, nullptr, 10) : 64ull) << 20u;
+}()};
 
 std::uint64_t configuredBudget() {
     if (const auto set = budgetOverride.load(std::memory_order_relaxed); set != 0) return set;
@@ -764,10 +768,7 @@ std::uint64_t importBudget(const Context& context, const HostImports& state) {
 }
 
 ImportRun windowRun(ImportRun run, std::uint64_t begin, std::uint64_t end, std::uint64_t alignment) {
-    static const std::uint64_t window = [] {
-        const char* value = std::getenv("APS5_HOST_IMPORT_WINDOW_MIB");
-        return (value ? std::strtoull(value, nullptr, 10) : 64ull) << 20u;
-    }();
+    const auto window = rangeImportWindow.load(std::memory_order_relaxed);
     if (run.ranges.size() != 1 || window == 0 || alignment == 0 || window % alignment != 0) return run;
     const auto& range = *run.ranges.front();
     if (range.bytes <= window || begin < range.address || end > range.address + range.bytes || end <= begin) return run;
@@ -2217,6 +2218,10 @@ void SetHostImportWindow(std::uint64_t bytes) {
 
 void SetHostImportBudget(std::uint64_t bytes) {
     budgetOverride.store(bytes, std::memory_order_relaxed);
+}
+
+void SetHostImportRangeWindow(std::uint64_t bytes) {
+    rangeImportWindow.store(bytes, std::memory_order_relaxed);
 }
 
 const HostImport* HostImportFor(const Context& context, std::uint64_t address, std::size_t bytes, bool settleHeldLabels) {
