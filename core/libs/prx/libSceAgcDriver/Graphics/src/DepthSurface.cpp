@@ -619,7 +619,6 @@ float HostDepthBiasConstant(const Context& context, VkFormat format, float const
     Require(host == VK_FORMAT_D24_UNORM_S8_UINT, "a constant depth bias on a 16-bit depth target with stencil that the device stores as 32-bit float depth is not implemented");
     return constant * 256.0f;
 }
-}
 
 VkImageView DepthSurfaceView(const Context& context, const DepthTarget& target) {
     std::lock_guard gpu(GuestMemory::GpuMutex());
