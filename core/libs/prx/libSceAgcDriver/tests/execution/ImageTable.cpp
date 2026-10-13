@@ -719,8 +719,7 @@ void RunTests(AgcDriver::VulkanDevice& device) {
     Require(!Faulted(unmappedUnused) && Group(unmappedUnused, 0) == Group(classes, 0), "image table: an unreferenced unmapped entry changed the result:\n" + unmappedUnused.log);
     Keys[0] = 8;
     const auto unmappedUsed = Run(device, TableCode, 1, Lanes, 64);
-    const auto unmappedControl = RunDirect(device, PointClamp, unmappedImage);
-    Require(Faulted(unmappedUsed) ? unmappedUsed.log.find("rejected by the driver") != std::string::npos || unmappedUsed.log.find("unmapped") != std::string::npos : Group(unmappedUsed, 0) == Group(unmappedControl, 0), "image table: an unmapped entry neither faulted nor matched the direct binding:\n" + unmappedUsed.log);
+    Require(Faulted(unmappedUsed) && unmappedUsed.log.find("rejected by the driver") != std::string::npos && unmappedUsed.log.find("is not mapped") != std::string::npos && Zeros(unmappedUsed), "image table: an entry whose surface is not mapped was bound instead of faulting when selected:\n" + unmappedUsed.log);
     SetRecord(8, PointClamp, floatImage);
 #ifdef _WIN32
     VirtualFree(reserved, 0, MEM_RELEASE);
