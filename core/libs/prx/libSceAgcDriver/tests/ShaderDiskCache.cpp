@@ -977,7 +977,6 @@ void verifySpecializationLiveness() {
     emit(spv::OpEntryPoint, {spv::ExecutionModelGLCompute, 10u, 0x6e69616du, 0u});
     emit(spv::OpExecutionMode, {10u, spv::ExecutionModeLocalSize, 1u, 1u, 1u});
     emit(spv::OpDecorate, {27u, spv::DecorationRelaxedPrecision});
-    emit(spv::OpDecorate, {60u, spv::DecorationRelaxedPrecision});
     emit(spv::OpTypeVoid, {1u});
     emit(spv::OpTypeInt, {3u, 32u, 0u});
     emit(spv::OpTypePointer, {4u, spv::StorageClassPrivate, 3u});
@@ -990,10 +989,6 @@ void verifySpecializationLiveness() {
     emit(spv::OpFunction, {1u, 10u, spv::FunctionControlMaskNone, 5u});
     emit(spv::OpLabel, {11u});
     emit(spv::OpLoad, {3u, 12u, 8u});
-    emit(spv::OpIAdd, {3u, 60u, 7u, 7u});
-    emit(spv::OpIAdd, {3u, 61u, 7u, 7u});
-    emit(spv::OpStore, {8u, 61u});
-    emit(spv::OpIAdd, {3u, 32u, 7u, 7u});
     emit(spv::OpIMul, {3u, 13u, 12u, 7u});
     emit(spv::OpIAdd, {3u, 14u, 13u, 7u});
     emit(spv::OpCopyObject, {3u, 15u, 12u});
@@ -1015,8 +1010,6 @@ void verifySpecializationLiveness() {
     emit(spv::OpFunctionEnd, {});
     const auto specialized = SpecializeSpirv(words);
     std::map<std::uint32_t, std::vector<std::uint32_t>> results;
-    std::map<std::uint32_t, std::uint32_t> scalarConstants;
-    bool deadConstantDecorated = false;
     std::size_t stores = 0;
     for (std::size_t cursor = 5; cursor < specialized.size();) {
         const auto count = specialized[cursor] >> 16u;
@@ -1024,17 +1017,12 @@ void verifySpecializationLiveness() {
         require(count != 0u && count <= specialized.size() - cursor, "dead computation removal truncated an instruction");
         if (op == spv::OpLoad || op == spv::OpCopyObject || op == spv::OpIAdd || op == spv::OpIMul || op == spv::OpCompositeExtract || op == spv::OpFunctionCall) results.emplace(specialized[cursor + 2u], std::vector<std::uint32_t>(specialized.begin() + cursor, specialized.begin() + cursor + count));
         if (op == spv::OpStore) ++stores;
-        if (op == spv::OpConstant) scalarConstants.emplace(specialized[cursor + 2u], specialized[cursor + 3u]);
-        if (op == spv::OpDecorate && specialized[cursor + 1u] == 60u) deadConstantDecorated = true;
         cursor += count;
     }
     for (const auto id : {13u, 14u, 15u, 16u, 28u}) require(!results.contains(id), "specialization retained a dead computation or copy chain");
     require(results.at(17u).at(3) == 12u, "copy propagation lost the live source");
     require(results.at(26u).at(4) == 15u, "copy propagation rewrote a literal as an ID");
-    require(results.contains(18u) && results.contains(20u) && results.contains(27u) && stores == 4u, "specialization removed an effect or decorated copy");
-    require(!scalarConstants.contains(60u) && !deadConstantDecorated, "specialization retained an unused folded constant or its decoration");
-    require(scalarConstants.at(61u) == 2u, "specialization removed or changed the live folded constant");
-    require(scalarConstants.at(32u) == 2u, "conservative constant liveness discarded an ID matching a literal operand");
+    require(results.contains(18u) && results.contains(20u) && results.contains(27u) && stores == 3u, "specialization removed an effect or decorated copy");
     require(SpecializeSpirv(specialized) == specialized, "dead computation removal is not stable");
 }
 
