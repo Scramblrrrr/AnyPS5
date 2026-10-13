@@ -1689,7 +1689,6 @@ bool StorageTexture::Refresh() {
         handedFrom.push_back(std::move(handOver));
     }
     if (!handedFrom.empty()) {
-        for (const auto& handOver : handedFrom) for (const auto& [theirs, mine] : handOver.units) layerOriginal[mine] = false;
         comparedGuestBytes = {};
     }
     std::vector<bool> deviceUnits;
@@ -1742,6 +1741,11 @@ bool StorageTexture::Refresh() {
             stampedBlocks.assign(generations.size(), 0);
             cpuBlocks.assign(generations.size(), 0);
             tracked = GuestMemory::ChangedBlocks(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), generations, stampedBlocks, cpuBlocks);
+            const auto previousFilters = std::exchange(handOverFilters, filters.empty() ? handOverFilters : &filters);
+            struct RestoreFilters {
+                const std::vector<HandOverFilter>* previous;
+                ~RestoreFilters() { handOverFilters = previous; }
+            } restoreFilters{previousFilters};
             compared = !tracked && compareUntracked(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), stampedBlocks, true);
             if (compared) cpuBlocks = stampedBlocks;
         };
@@ -1954,7 +1958,6 @@ bool StorageTexture::Refresh() {
         } restore{previousUpload, previousFilters};
         upload(&changed);
         if (uploadState.buffer != nullptr) {
-            for (std::size_t unit = 0; unit < deviceUnits.size(); ++unit) if (deviceUnits[unit]) layerOriginal[unit] = false;
             for (auto& handOver : handedFrom) {
                 if (handOver.device) handOver.takerVersion = version;
             }
@@ -2174,8 +2177,8 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
         // batch of its own submitted the recorder's work first and waited for all of it, 25-40 ms
         // under the GPU mutex at the movie stage. APS5_NO_RECORDED_CLEAR=1 waits as before.
         static_cast<void>(HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes)));
-        if (handingOver || GuestMemory::Watched(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) layerOriginal.assign(trackedLayers, false);
-        else captureGuestBytes(nullptr);
+        if (GuestMemory::Watched(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) layerOriginal.assign(trackedLayers, false);
+        else if (!handingOver) captureGuestBytes(nullptr);
         forgetBorrowed(0, trackedLayers);
         stampLayers(false);
         static const bool recordClear = std::getenv("APS5_NO_RECORDED_CLEAR") == nullptr;
