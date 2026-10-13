@@ -354,6 +354,8 @@ Throughout the project, every function at every stage either **does exactly what
 
 ### Functional
 
+- Deferred alias handovers retain GPU results only while the alias range is write-watched. Untracked ranges use the ordinary flush before refresh; extending deferral to them requires advancing saved comparison bytes for known GPU stores without hiding later CPU edits.
+
 - [Pending storage-image results outside the write watch](../../core/libs/prx/libSceAgcDriver/Graphics/src/Texture.cpp) retain saved guest bytes per unit to preserve later CPU edits. If a range leaves the watch after its results become pending, no saved bytes exist and storing those results throws; saving the bytes or storing the results when the range leaves the watch is unimplemented.
 
 - [Reused depth storage](../../core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp): a storage view with another extent or a format that cannot hold the cached depth plane uses guest memory. This classification does not prove allocation reuse or preserve a depth writer through an incompatible read-only view. Written storage may retire the previous depth surface; matching read-only depth storage still uses the existing depth seed path.

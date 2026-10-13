@@ -1644,7 +1644,7 @@ bool StorageTexture::Refresh() {
     DccKeys handOverKeys = DccKeys::Uncompressed;
     auto previousHandOvers = std::move(handedFrom);
     handedFrom.clear();
-    if (!handOverOff.load(std::memory_order_relaxed) && (!previousHandOvers.empty() || otherPendingOverlaps())) handOvers = handOversUnder(alias.get(), handOverKeys);
+    if (!handOverOff.load(std::memory_order_relaxed) && GuestMemory::Watched(descriptor.baseAddress, static_cast<std::size_t>(guestBytes)) && (!previousHandOvers.empty() || otherPendingOverlaps())) handOvers = handOversUnder(alias.get(), handOverKeys);
     std::vector<std::vector<bool>> handedUnits;
     std::vector<HandOverFilter> filters;
     handedUnits.reserve(handOvers.size());

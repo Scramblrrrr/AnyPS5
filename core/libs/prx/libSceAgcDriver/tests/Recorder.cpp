@@ -5918,11 +5918,13 @@ void aliasHandOverMemoryTests(const Device& device, Recorder& recorder) {
         auto imageA = StorageTexture::Create(context, detiler, surface(256, 256, 56, 0), 0);
         auto imageB = StorageTexture::Create(context, detiler, surface(128, 128, 71, address + surfaceA), 0);
         draw(imageA, {{1.0f, 0.0f, 0.0f, 1.0f}});
+        const bool deferred = AgcDriver::GuestMemory::Watched(address, surfaceB);
         imageB->Refresh();
         recorder.Submit();
         device.WaitQueue();
         recorder.Sync();
-        Require(std::all_of(memory, memory + 2 * 65536, [](std::uint8_t value) { return value == 0x55; }), "the refresh of a surface under clear keys stored the pending results of the image it aliases over its memory");
+        if (deferred) Require(std::all_of(memory, memory + 2 * 65536, [](std::uint8_t value) { return value == 0x55; }), "the refresh of a watched surface under clear keys stored the pending alias results");
+        else for (std::size_t i = 0; i < 2 * 65536; i += 4) Require(std::memcmp(memory + i, red.data(), 4) == 0, "an untracked alias did not store its source bytes before the ordinary refresh");
         Require(StorageTexture::FindPending(address, surfaceA) == imageA, "the aliased image's results under the cleared surface did not stay pending");
         draw(imageB, {{0.0f, 1.0f, 0.0f, 1.0f}});
         Require(StorageTexture::FlushPending(address, bytes, nullptr, "alias hand-over memory test", PublishScope::Whole), "nothing was pending at the end");
@@ -6093,7 +6095,7 @@ void aliasHandOverTests(const Device& device, Recorder& recorder, bool watched) 
         std::memset(memory + surfaceA, 0x00, keyCount);
         Outcome outcome{};
         const auto before = TakeAliasHandOverCounts();
-        const bool defers = handOver && (content == Content::KeysClear || watched);
+        const bool defers = handOver && watched;
         {
             auto imageA = StorageTexture::Create(context, detiler, resourceA, 0);
             auto imageB = StorageTexture::Create(context, detiler, content == Content::KeysClear ? resourceB : resourcePlainB, 0);
@@ -6121,6 +6123,7 @@ void aliasHandOverTests(const Device& device, Recorder& recorder, bool watched) 
                 Require(imageHolds(imageA, 256, 256, red), where + ": A read again as A lost its results");
             }
             if (order == Order::Rewritten) {
+                imageA->Refresh();
                 draw(imageA, {{0.0f, 0.0f, 1.0f, 1.0f}});
                 constexpr std::array<std::uint8_t, 4> blue{0, 0, 255, 255};
                 const auto read = readMemory(address, 65536);
@@ -6146,6 +6149,9 @@ void aliasHandOverTests(const Device& device, Recorder& recorder, bool watched) 
         outcome.counts.deviceUnits = after.deviceUnits - before.deviceUnits;
         recorder.Sync();
         return outcome;
+        } catch (const std::exception& error) {
+            throw std::runtime_error(where + ": " + error.what());
+        }
     };
     for (const auto content : {Content::KeysClear, Content::Memory}) {
         for (const auto order : {Order::Superseded, Order::ReadFirst, Order::Rewritten}) {
@@ -6164,7 +6170,7 @@ void aliasHandOverTests(const Device& device, Recorder& recorder, bool watched) 
             Require(on.bytes == off.bytes, name + ": On left other guest bytes than Off");
             Require(off.counts.handedOver == 0 && off.counts.superseded == 0, name + ": Off handed over or superseded units");
             Require(on.counts.fallbacks == 0, name + ": a decision fell back");
-            const bool defers = content == Content::KeysClear || watched;
+            const bool defers = watched;
             if (!defers) {
                 Require(on.counts.handedOver == 0, name + ": units were taken on the device without write tracking");
                 continue;
