@@ -258,11 +258,11 @@ void Run(AgcDriver::VulkanDevice& device, std::uint8_t* texels, std::uint32_t sw
     const auto pending = StorageTexture::FindPending(collapsed ? surface + slice * LayerBytes : surface, collapsed ? LayerBytes : SurfaceBytes);
     if (collapsed) Require(pending != nullptr && pending->Descriptor().dimension == TextureDimension::k2D && pending->Descriptor().baseAddress == surface + slice * LayerBytes, "a collapsed slice did not render into its shifted surface");
     else Require(pending != nullptr && pending->Descriptor().dimension == TextureDimension::k2DArray && pending->Descriptor().baseAddress == surface && pending->Descriptor().depthOrLastArray == Layers - 1u, "the draw into slice 1 did not render into the image of its array");
-    LoadLayer(device, surface, slice, swizzleMode);
+    LoadLayer(device, surface, slice);
     RequireOutput(drawn, Initial, "slice " + std::to_string(slice) + " read through the array after the draw");
     for (std::uint32_t other = 0; other < Layers; ++other) {
         if (other == slice) continue;
-        LoadLayer(device, surface, other, swizzleMode);
+        LoadLayer(device, surface, other);
         RequireOutput(Initial, Initial, "slice " + std::to_string(other) + " after the draw into slice " + std::to_string(slice));
     }
     StorageTexture::FlushPending(surface, SurfaceBytes, nullptr, "test");
@@ -270,7 +270,7 @@ void Run(AgcDriver::VulkanDevice& device, std::uint8_t* texels, std::uint32_t sw
     AgcDriver::Graphics::ClearCachedTextures(device.Device());
     AgcDriver::GuestMemory::CollectWrites(surface, SurfaceBytes);
     AgcDriver::GuestMemory::BumpCollectEpoch();
-    LoadLayer(device, surface, slice, swizzleMode);
+    LoadLayer(device, surface, slice);
     RequireOutput(drawn, Initial, "slice " + std::to_string(slice) + " uploaded again from guest memory");
     AgcDriver::Graphics::ClearCachedTextures(device.Device());
 }
