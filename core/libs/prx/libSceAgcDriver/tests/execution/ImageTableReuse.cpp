@@ -237,10 +237,7 @@ void RunImageStore(AgcDriver::VulkanDevice& device, const GuestBlock& block) {
     Require(Row(block.Texels(23)) == Row(stored.data()), "image table reuse: the image store wrote the wrong values");
 }
 
-// Measures complete dispatch wall time, including GPU submission/readback. The
-// physical descriptor array repeats 48 synthetic textures; this deliberately
-// measures table-size overhead rather than allocating thousands of new images.
-void RunBenchmark(AgcDriver::VulkanDevice& device, const GuestBlock& block) {
+void RunBenchmark(AgcDriver::VulkanDevice& device, const GuestBlock& block, bool gpuEntry = false) {
     namespace Abi = ShaderRecompiler::ImageTableAbi;
     for (std::uint32_t key = 0; key < Records; ++key) Keys[key] = key;
     for (std::uint32_t texture = 0; texture < Records; ++texture) {
@@ -253,6 +250,7 @@ void RunBenchmark(AgcDriver::VulkanDevice& device, const GuestBlock& block) {
     std::copy(keys.begin(), keys.end(), Srt.begin() + 4);
     SetOutput(Output.data());
     const auto original = Compile(device, block);
+    if (gpuEntry) Store(device, block, 23);
     for (const std::uint32_t count : {48u, 256u, 3200u, 18960u}) {
         auto program = original;
         auto& images = *std::find_if(program.bindings.begin(), program.bindings.end(), [](const auto& binding) { return binding.role == ShaderRecompiler::DescriptorRole::ImageTable; });
@@ -283,7 +281,7 @@ void RunBenchmark(AgcDriver::VulkanDevice& device, const GuestBlock& block) {
         const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - begin).count();
         const auto step = Since(before);
         Require(step.reused + step.resolved == repeats, "table benchmark lost its resolution counters");
-        std::printf("table-benchmark physical=%u unique-textures=%u repeats=%u us/dispatch=%.3f reused=%llu resolved=%llu\n", count, Records, repeats, elapsed / repeats, static_cast<unsigned long long>(step.reused), static_cast<unsigned long long>(step.resolved));
+        std::printf("table-benchmark physical=%u unique-textures=%u gpu-entry=%d repeats=%u us/dispatch=%.3f reused=%llu resolved=%llu\n", count, Records, gpuEntry ? 23 : -1, repeats, elapsed / repeats, static_cast<unsigned long long>(step.reused), static_cast<unsigned long long>(step.resolved));
     }
 }
 
@@ -425,6 +423,10 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string(argv[1]) == "--benchmark") {
             RunBenchmark(*device, block);
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--benchmark-mixed") {
+            RunBenchmark(*device, stores, true);
             return 0;
         }
         RunTests(*device, block, stores);
