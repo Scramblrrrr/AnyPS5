@@ -6149,9 +6149,6 @@ void aliasHandOverTests(const Device& device, Recorder& recorder, bool watched) 
         outcome.counts.deviceUnits = after.deviceUnits - before.deviceUnits;
         recorder.Sync();
         return outcome;
-        } catch (const std::exception& error) {
-            throw std::runtime_error(where + ": " + error.what());
-        }
     };
     for (const auto content : {Content::KeysClear, Content::Memory}) {
         for (const auto order : {Order::Superseded, Order::ReadFirst, Order::Rewritten}) {
