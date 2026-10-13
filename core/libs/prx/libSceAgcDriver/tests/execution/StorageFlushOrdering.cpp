@@ -2,6 +2,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
+#include "prx/libc/include/GuestArena.hpp"
 #include "Recompiler.hpp"
 #include "VulkanTestDevice.hpp"
 #include <array>
@@ -38,7 +39,8 @@ class GuestBlock {
 public:
     GuestBlock() {
 #ifdef _WIN32
-        block = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, BlockBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        block = static_cast<std::uint8_t*>(GuestArena::GuestArenaAllocate_nid_postfix(BlockBytes, BlockBytes));
+        if (block != nullptr) GuestArena::GuestArenaCommit_nid_postfix(block, BlockBytes, PAGE_READWRITE, BlockBytes);
 #else
         block = static_cast<std::uint8_t*>(std::aligned_alloc(BlockBytes, BlockBytes));
 #endif
@@ -49,7 +51,7 @@ public:
     ~GuestBlock() {
         GuestAllocations::Mutation().Remove(block);
 #ifdef _WIN32
-        VirtualFree(block, 0, MEM_RELEASE);
+        GuestArena::GuestArenaRelease_nid_postfix(block, BlockBytes);
 #else
         std::free(block);
 #endif
@@ -92,6 +94,9 @@ void Run(AgcDriver::VulkanDevice& device) {
     auto* words = guest.Words();
     std::fill(words, words + ImageBytes / 4u, Initial);
     const auto base = guest.Address();
+#ifdef _WIN32
+    Require(AgcDriver::GuestMemory::Watched(base, ImageBytes), "storage flush ordering: the Windows guest block is not watched");
+#endif
     std::vector<std::uint32_t> imageUser(12, 0u);
     imageUser[4] = static_cast<std::uint32_t>(base >> 8u);
     imageUser[5] = static_cast<std::uint32_t>((base >> 40u) & 0xffu) | (20u << 20u) | (((Width - 1u) & 3u) << 30u);
