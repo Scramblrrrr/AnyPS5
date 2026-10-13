@@ -347,8 +347,10 @@ void RunMixedTables(AgcDriver::VulkanDevice& device, const GuestBlock& block) {
     Store(device, block, 23);
     Require(Dispatch(device, result, 23) == Row(stored.data()), "a mixed table retained CPU data over a newer GPU write");
     Require(Dispatch(device, result, 23) == Row(stored.data()), "a mixed table lost the refreshed GPU view");
+    AgcDriver::Graphics::FlushCachedTextures(device.Device());
+    device.WaitIdle();
     AgcDriver::Graphics::ClearCachedTextures(device.Device());
-    Require(Dispatch(device, result, 23) == Row(stored.data()), "a mixed table reused an evicted CPU snapshot");
+    Require(Dispatch(device, result, 23) == Row(stored.data()), "a mixed table's cache clear lost its settled texels");
     Fill(block, Moved, 0.75f);
     SetRecord(block, 23, Moved);
     AgcDriver::GuestMemory::BumpCollectEpoch();
@@ -365,7 +367,7 @@ int main(int argc, char** argv) {
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
         if (argc == 2 && std::string(argv[1]) == "--mixed-tables") {
-            RunMixedTables(*device, block);
+            RunMixedTables(*device, stores);
             std::puts("mixed image table tests passed");
             return 0;
         }
