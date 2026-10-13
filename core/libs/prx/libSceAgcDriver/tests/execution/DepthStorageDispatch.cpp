@@ -44,6 +44,8 @@ constexpr std::size_t StencilOffset = 1u << 16u;
 constexpr std::size_t OutputOffset = 2u << 16u;
 constexpr std::size_t MultisampledOffset = 4u << 16u;
 constexpr std::size_t MultisampledColorOffset = 5u << 16u;
+constexpr std::size_t SampledOffset = 8u << 16u;
+constexpr std::size_t LaterDepthOffset = 10u << 16u;
 
 alignas(256) constexpr std::array<std::uint32_t, 14> ScaleDepthCode{
     0x7e3c0300u, 0x7e3e0280u, 0x7e140280u, 0xf0001108u, 0x00010a1eu, 0xbf8c3f70u, 0x34060082u,
@@ -65,6 +67,10 @@ alignas(256) constexpr std::array<std::uint32_t, 10> StoreLayerCode{
 
 alignas(256) constexpr std::array<std::uint32_t, 10> StoreTwoViewsCode{
     0x7e280d00u, 0x102828ffu, 0x3c800000u, 0x7e3c0300u, 0x7e3e0280u, 0xf0201108u, 0x0001141eu, 0xf0201108u, 0x0003141eu, 0xbf810000u,
+};
+
+alignas(256) constexpr std::array<std::uint32_t, 11> LoadLayerCode{
+    0x7e020280u, 0x7e04020cu, 0xf0001128u, 0x00010300u, 0xbf8c3f70u, 0x34080082u, 0xe0701000u, 0x80000304u, 0xbf810000u, 0xbf810000u, 0xbf810000u,
 };
 
 class GuestBlock {
@@ -103,14 +109,14 @@ std::array<std::uint32_t, 4> BufferDescriptor(const void* data, std::uint32_t by
     return {static_cast<std::uint32_t>(address), static_cast<std::uint32_t>((address >> 32u) & 0xffffu), bytes, 0x31016facu};
 }
 
-std::array<std::uint32_t, 8> TextureDescriptor(const void* data, std::uint32_t format, std::uint32_t type = Type2D, std::uint32_t tile = TileLinear) {
+std::array<std::uint32_t, 8> TextureDescriptor(const void* data, std::uint32_t format, std::uint32_t type = Type2D, std::uint32_t tile = TileLinear, std::uint32_t lastArray = 0) {
     const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(data));
     return {
         static_cast<std::uint32_t>(address >> 8u),
         static_cast<std::uint32_t>((address >> 40u) & 0xffu) | (format << 20u) | (((Width - 1u) & 3u) << 30u),
         ((Width - 1u) >> 2u) | ((Height - 1u) << 14u),
         0xfacu | (tile << 20u) | (type << 28u),
-        0u, 0u, 0u, 0u,
+        lastArray, 0u, 0u, 0u,
     };
 }
 
@@ -255,6 +261,27 @@ void MultisampledCase(AgcDriver::VulkanDevice& device, const Shaders& compiled, 
     ExpectRefusal([&] { device.Dispatch(program, 1, 1, 1, {}, reinterpret_cast<std::uintptr_t>(StoreCode.data())); }, "storage image access to a multisampled depth surface", "a storage view of a multisampled depth plane");
 }
 
+void SampledCopyCase(AgcDriver::VulkanDevice& device, const Shaders& shaders, std::uint8_t* block) {
+    auto* depth = block + SampledOffset;
+    const std::span<std::uint32_t> output(reinterpret_cast<std::uint32_t*>(block + OutputOffset), Threads);
+    const Surface surface{reinterpret_cast<std::uintptr_t>(depth), 0, 0, false, VK_FORMAT_D32_SFLOAT};
+    const Surface later{reinterpret_cast<std::uintptr_t>(block + LaterDepthOffset), 0, 0, false, VK_FORMAT_D32_SFLOAT};
+    Require(Draw(device, shaders, surface, {.depthWrite = true, .depthCompare = VK_COMPARE_OP_ALWAYS}) == Covered, "the sampled depth producer did not cover the surface");
+    Require(Draw(device, shaders, later, {.depthWrite = true, .depthCompare = VK_COMPARE_OP_ALWAYS}) == Covered, "the later depth producer did not cover its surface");
+
+    std::vector<std::uint32_t> userData(16, 0u);
+    const auto buffer = BufferDescriptor(output.data(), static_cast<std::uint32_t>(output.size_bytes()));
+    const auto layers = TextureDescriptor(depth, Format32Float, Type2DArray, TileLinear, 1u);
+    std::copy(buffer.begin(), buffer.end(), userData.begin());
+    std::copy(layers.begin(), layers.end(), userData.begin() + 4);
+    const auto load = Compile(device, LoadLayerCode, userData);
+    const auto raise = PlaneProgram(device, ScaleDepthCode, output, depth, Format32Float, 1.5f);
+    RunPlane(device, load, LoadLayerCode, output, std::bit_cast<std::uint32_t>(0.5f), "first layer of the depth plane copy");
+    RunPlane(device, load, LoadLayerCode, output, std::bit_cast<std::uint32_t>(0.5f), "first layer of the unchanged depth plane copy");
+    RunPlane(device, raise, ScaleDepthCode, output, std::bit_cast<std::uint32_t>(0.5f), "depth dispatch between two plane copies");
+    RunPlane(device, load, LoadLayerCode, output, std::bit_cast<std::uint32_t>(0.75f), "first layer of the depth plane copy after the dispatch stored to the plane");
+}
+
 void TwoViewsCase(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
     std::vector<std::uint32_t> userData(20, 0u);
     const auto first = TextureDescriptor(block, Format32Float, Type2D, TileLinear);
@@ -277,6 +304,7 @@ int main() {
         ArrayViewCase(*device, block.Data());
         MultisampledCase(*device, shaders, block.Data());
         TwoViewsCase(*device, block.Data());
+        SampledCopyCase(*device, shaders, block.Data());
         std::puts("depth storage dispatch tests passed");
         return 0;
     } catch (const std::exception& error) {

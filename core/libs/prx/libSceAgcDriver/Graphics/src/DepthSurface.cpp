@@ -279,6 +279,7 @@ public:
             auto& plane = stencil ? stencilPlane : depthPlane;
             if (plane.storage.get() == &candidate) {
                 copyPlane(plane, stencil, false);
+                written = ++depthWrites;
                 return true;
             }
             if (std::none_of(plane.replaced.begin(), plane.replaced.end(), [&](const auto& old) { return old.lock().get() == &candidate; })) continue;
