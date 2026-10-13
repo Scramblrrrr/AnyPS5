@@ -3548,6 +3548,35 @@ std::shared_ptr<ComputePipelineObjects> VulkanDevice::computePipeline(const Shad
         requiredSubgroup.requiredSubgroupSize = std::min(shader.hostSubgroupSize, state->maxComputeSubgroupSize);
         if (state->computeWave32 && (shader.hostSubgroupSize == 32u || shader.hostSubgroupSize > state->maxComputeSubgroupSize)) pipelineInfo.stage.pNext = &requiredSubgroup;
         pipelineInfo.layout = objects->layout;
+        static const bool tracePipelines = std::getenv("APS5_TRACE_COMPUTE_PIPELINES") != nullptr;
+        if (tracePipelines && shader.spirv.size() >= 1000000) {
+            std::vector<std::uint32_t> counts(65536);
+            std::size_t cursor = 5, instructions = 0, largest = 0;
+            while (cursor < shader.spirv.size()) {
+                const auto instruction = shader.spirv[cursor];
+                const auto words = instruction >> 16u;
+                if (words == 0 || words > shader.spirv.size() - cursor) break;
+                ++counts[instruction & 0xffffu];
+                ++instructions;
+                largest = std::max(largest, static_cast<std::size_t>(words));
+                cursor += words;
+            }
+            std::fprintf(stderr, "[dispatch-size] words=%zu instructions=%zu complete=%u labels=%u loops=%u selections=%u phis=%u loads=%u stores=%u switches=%u access_chains=%u selects=%u largest_instruction_words=%zu\n",
+                         shader.spirv.size(), instructions, cursor == shader.spirv.size() ? 1u : 0u, counts[spv::OpLabel], counts[spv::OpLoopMerge], counts[spv::OpSelectionMerge], counts[spv::OpPhi], counts[spv::OpLoad], counts[spv::OpStore], counts[spv::OpSwitch], counts[spv::OpAccessChain], counts[spv::OpSelect], largest);
+            std::array<std::pair<std::uint32_t, std::uint32_t>, 8> common{};
+            for (std::uint32_t opcode = 0; opcode < counts.size(); ++opcode) {
+                if (counts[opcode] <= common.back().first) continue;
+                common.back() = {counts[opcode], opcode};
+                std::sort(common.begin(), common.end(), std::greater<>());
+            }
+            std::fprintf(stderr, "[dispatch-size] most frequent opcode/count:");
+            for (const auto& [count, opcode] : common) if (count != 0) std::fprintf(stderr, " %u/%u", opcode, count);
+            std::fprintf(stderr, "\n");
+        }
+        if (tracePipelines || (profile && shader.spirv.size() > 100000)) std::fprintf(stderr, "[dispatch] creating a pipeline for %zu SPIR-V words (program 0x%llx, flags 0x%x)\n", shader.spirv.size(), static_cast<unsigned long long>(programAddress), static_cast<unsigned int>(pipelineInfo.flags));
+        const auto pipelineStarted = tracePipelines ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        check(state->DeviceFunction<PFN_vkCreateComputePipelines>("vkCreateComputePipelines")(state->device, context.pipelineCache, 1, &pipelineInfo, nullptr, &objects->pipeline), "vkCreateComputePipelines");
+        if (tracePipelines) std::fprintf(stderr, "[dispatch] pipeline ready for %zu SPIR-V words (program 0x%llx) in %.1f ms\n", shader.spirv.size(), static_cast<unsigned long long>(programAddress), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipelineStarted).count());
         objects->destroyModule(objects->device, objects->module, nullptr);
         objects->module = VK_NULL_HANDLE;
         Graphics::LogPipelineStatistics_nid_no_patch(context, objects->pipeline);
