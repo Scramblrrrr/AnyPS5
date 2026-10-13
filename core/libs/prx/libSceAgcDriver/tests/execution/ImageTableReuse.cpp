@@ -6,6 +6,7 @@
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
 #include "Recompiler.hpp"
+#include "ImageTableAbi.hpp"
 #include "VulkanTestDevice.hpp"
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -235,6 +237,56 @@ void RunImageStore(AgcDriver::VulkanDevice& device, const GuestBlock& block) {
     Require(Row(block.Texels(23)) == Row(stored.data()), "image table reuse: the image store wrote the wrong values");
 }
 
+// Measures complete dispatch wall time, including GPU submission/readback. The
+// physical descriptor array repeats 48 synthetic textures; this deliberately
+// measures table-size overhead rather than allocating thousands of new images.
+void RunBenchmark(AgcDriver::VulkanDevice& device, const GuestBlock& block) {
+    namespace Abi = ShaderRecompiler::ImageTableAbi;
+    for (std::uint32_t key = 0; key < Records; ++key) Keys[key] = key;
+    for (std::uint32_t texture = 0; texture < Records; ++texture) {
+        Fill(block, texture, 0.25f);
+        SetRecord(block, texture, texture);
+    }
+    const auto srt = Buffer(block.Table(), Records * Stride);
+    const auto keys = Buffer(Keys.data(), static_cast<std::uint32_t>(sizeof(Keys)));
+    std::copy(srt.begin(), srt.end(), Srt.begin());
+    std::copy(keys.begin(), keys.end(), Srt.begin() + 4);
+    SetOutput(Output.data());
+    const auto original = Compile(device, block);
+    for (const std::uint32_t count : {48u, 256u, 3200u, 18960u}) {
+        auto program = original;
+        auto& images = *std::find_if(program.bindings.begin(), program.bindings.end(), [](const auto& binding) { return binding.role == ShaderRecompiler::DescriptorRole::ImageTable; });
+        const auto source = images;
+        images.count = count;
+        images.guestDescriptor.resize(static_cast<std::size_t>(count) * 8u);
+        images.imageShapes.resize(count);
+        images.imageDepthCompare.resize(count);
+        images.imageSamplers.resize(count);
+        for (std::uint32_t entry = 0; entry < count; ++entry) {
+            const auto from = entry % Records;
+            std::copy_n(source.guestDescriptor.begin() + from * 8u, 8u, images.guestDescriptor.begin() + entry * 8u);
+            images.imageShapes[entry] = source.imageShapes.at(from);
+            images.imageDepthCompare[entry] = source.imageDepthCompare.at(from);
+            images.imageSamplers[entry] = source.imageSamplers.at(from);
+        }
+        auto& map = *std::find_if(program.bindings.begin(), program.bindings.end(), [](const auto& binding) { return binding.role == ShaderRecompiler::DescriptorRole::ImageTableMap; });
+        const auto samplerFaults = map.guestDescriptor.at(Abi::HeaderSamplerFaults);
+        map.guestDescriptor.insert(map.guestDescriptor.begin() + samplerFaults, count - Records, 0u);
+        map.guestDescriptor[Abi::HeaderElementCount] = count;
+        map.guestDescriptor[Abi::HeaderSamplerFaults] += count - Records;
+        AgcDriver::GuestMemory::BumpCollectEpoch();
+        for (unsigned warm = 0; warm < 3; ++warm) Require(Dispatch(device, program, 3) == Row(block.Texels(3)), "table benchmark warm-up sampled the wrong texels");
+        constexpr unsigned repeats = 32;
+        const auto before = AgcDriver::Graphics::ImageTableReuses();
+        const auto begin = std::chrono::steady_clock::now();
+        for (unsigned repeat = 0; repeat < repeats; ++repeat) Require(Dispatch(device, program, 3) == Row(block.Texels(3)), "table benchmark sampled the wrong texels");
+        const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - begin).count();
+        const auto step = Since(before);
+        Require(step.reused + step.resolved == repeats, "table benchmark lost its resolution counters");
+        std::printf("table-benchmark physical=%u unique-textures=%u repeats=%u us/dispatch=%.3f reused=%llu resolved=%llu\n", count, Records, repeats, elapsed / repeats, static_cast<unsigned long long>(step.reused), static_cast<unsigned long long>(step.resolved));
+    }
+}
+
 void RunTests(AgcDriver::VulkanDevice& device, const GuestBlock& block, const GuestBlock& stores) {
     for (std::uint32_t texture = 0; texture < Records; ++texture) {
         Fill(block, texture, 0.25f);
@@ -321,12 +373,16 @@ void RunTests(AgcDriver::VulkanDevice& device, const GuestBlock& block, const Gu
 
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
         GuestBlock block;
         GuestBlock stores(UnimportableBytes);
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
+        if (argc == 2 && std::string(argv[1]) == "--benchmark") {
+            RunBenchmark(*device, block);
+            return 0;
+        }
         RunTests(*device, block, stores);
         std::puts("image table reuse tests passed");
         return 0;
