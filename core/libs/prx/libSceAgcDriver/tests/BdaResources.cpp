@@ -225,6 +225,7 @@ private:
 };
 
 void importRefusedWholeRangeTests(const Context& context) {
+    std::lock_guard lock(AgcDriver::GuestMemory::GpuMutex());
     WindowedRange range(context, 2 * WindowedRange::piece, 4, 3 * 2 * WindowedRange::piece);
     const auto first = range.First();
     const auto* windowed = HostImportFor(range.importing, first + 16, 32);
