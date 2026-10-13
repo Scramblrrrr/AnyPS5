@@ -99,6 +99,7 @@ public:
             const auto base = cursor + done;
             shared->aliases.push_back(base);
             views.emplace(base, View{shared, protection, {}, 0, owned, offset + done, 0});
+            remember(freshRanges, base, base + pageBytes);
             invalidate(*shared);
         }
     }
@@ -240,6 +241,8 @@ public:
         *count = 0;
         const auto end = address + bytes;
         if (collection == Collection::Fresh) {
+            const auto fresh = freshRanges.upper_bound(address);
+            if ((fresh == freshRanges.begin() || std::prev(fresh)->second <= address) && (fresh == freshRanges.end() || fresh->first >= end)) return true;
             for (auto it = views.lower_bound(address & ~(pageBytes - 1)); it != views.end() && it->first < end; ++it) {
                 if (it->second.protection != PAGE_NOACCESS) continue;
                 for (auto at = std::max(address, it->first); at < std::min(end, it->first + pageBytes); at += 4096) {
@@ -294,7 +297,14 @@ public:
                     settled |= static_cast<std::uint8_t>(1u << sub);
                     settledEnd = to;
                 }
-                if (clear) view.collected |= settled;
+                if (clear) {
+                    for (std::size_t sub = 0; sub < subpages; ++sub) {
+                        const auto bit = static_cast<std::uint8_t>(1u << sub);
+                        if ((settled & bit) == 0 || (view.collected & bit) != 0) continue;
+                        view.collected |= bit;
+                        forget(freshRanges, base + sub * subpageBytes, base + (sub + 1) * subpageBytes);
+                    }
+                }
                 if (clear && !pinned && settled != 0) {
                     std::uint8_t untracked = 0;
                     for (const auto alias : view.page->aliases) {
@@ -397,27 +407,37 @@ private:
         std::uint32_t hostWrites;
         std::uint8_t collected = 0;
     };
-    void forgetClean(std::uintptr_t start, std::uintptr_t end) {
-        auto it = cleanRanges.lower_bound(start);
-        if (it != cleanRanges.begin() && std::prev(it)->second > start) --it;
-        while (it != cleanRanges.end() && it->first < end) {
+    using Ranges = std::map<std::uintptr_t, std::uintptr_t>;
+
+    static void forget(Ranges& ranges, std::uintptr_t start, std::uintptr_t end) {
+        auto it = ranges.lower_bound(start);
+        if (it != ranges.begin() && std::prev(it)->second > start) --it;
+        while (it != ranges.end() && it->first < end) {
             const auto first = it->first;
             const auto last = it->second;
-            it = cleanRanges.erase(it);
-            if (first < start) cleanRanges.emplace(first, start);
-            if (last > end) it = cleanRanges.emplace(end, last).first;
+            it = ranges.erase(it);
+            if (first < start) ranges.emplace(first, start);
+            if (last > end) it = ranges.emplace(end, last).first;
         }
     }
 
-    void rememberClean(std::uintptr_t start, std::uintptr_t end) {
-        auto it = cleanRanges.lower_bound(start);
-        if (it != cleanRanges.begin() && std::prev(it)->second >= start) --it;
-        while (it != cleanRanges.end() && it->first <= end) {
+    static void remember(Ranges& ranges, std::uintptr_t start, std::uintptr_t end) {
+        auto it = ranges.lower_bound(start);
+        if (it != ranges.begin() && std::prev(it)->second >= start) --it;
+        while (it != ranges.end() && it->first <= end) {
             start = std::min(start, it->first);
             end = std::max(end, it->second);
-            it = cleanRanges.erase(it);
+            it = ranges.erase(it);
         }
-        cleanRanges.emplace(start, end);
+        ranges.emplace(start, end);
+    }
+
+    void forgetClean(std::uintptr_t start, std::uintptr_t end) {
+        forget(cleanRanges, start, end);
+    }
+
+    void rememberClean(std::uintptr_t start, std::uintptr_t end) {
+        remember(cleanRanges, start, end);
     }
 
     void invalidate(SharedPage& page, std::uint8_t mask = allSubpages) {
@@ -519,6 +539,7 @@ private:
                 if (found != views.end()) {
                     std::erase(found->second.page->aliases, cursor);
                     views.erase(found);
+                    forget(freshRanges, cursor, cursor + pageBytes);
                 }
             } else if (memory.Type == MEM_PRIVATE) {
                 if (!VirtualFree(reinterpret_cast<void*>(cursor), allocationEnd - cursor, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) fail("release private guest memory");
@@ -571,7 +592,8 @@ private:
         return error;
     }
 
-    std::map<std::uintptr_t, std::uintptr_t> cleanRanges;
+    Ranges cleanRanges;
+    Ranges freshRanges;
     std::map<std::uintptr_t, View> views;
     std::map<std::pair<std::uintptr_t, std::uint64_t>, std::weak_ptr<SharedPage>> physical;
     std::map<std::uintptr_t, std::size_t> splitAliases;
