@@ -227,7 +227,8 @@ void Run(Context context, std::uint8_t* block) {
     auto layeredDepth = PlaneResource(address, Format32Float);
     layeredDepth.dimension = TextureDimension::k2DArray;
     const auto arrayDepth = DepthSurfaceStorage(context, {}, layeredDepth, 0);
-    Require(arrayDepth != nullptr, "a one-layer 2D array view of the depth plane was not taken for the depth surface");
+    Require(arrayDepth != nullptr && arrayDepth != depth, "a one-layer 2D array view of the depth plane was not taken for the depth surface as a storage image of its own");
+    ExpectFailure([&] { static_cast<void>(DepthSurfaceStoreBack(context, *depth)); }, "through a view that another view of the plane", "a store back through the 2D view that the one-layer 2D array view replaced was accepted");
     submit(recorder);
     readBack(*arrayDepth);
     Require(CountFloats(block, 0.5f) == Side * Side, "the one-layer 2D array view did not receive the depth plane");
@@ -240,7 +241,12 @@ void Run(Context context, std::uint8_t* block) {
     readBack(*arrayStencil);
     Require(std::count(block + BlockBytes / 2, block + BlockBytes / 2 + stencilBytes, 7) == static_cast<std::ptrdiff_t>(Side * Side), "the one-layer 2D array view did not receive the stencil plane");
     layeredStencil.depthOrLastArray = 1;
-    Require(DepthSurfaceStorage(context, {}, layeredStencil, 0) == nullptr, "a two-layer 2D array view of the stencil plane was taken for the depth surface");
+    ExpectFailure([&] { static_cast<void>(DepthSurfaceStorage(context, {}, layeredStencil, 0)); }, "storage image access to depth/stencil surface", "a two-layer 2D array view of the stencil plane was accepted");
+    layeredDepth.depthOrLastArray = 1;
+    ExpectFailure([&] { static_cast<void>(DepthSurfaceStorage(context, {}, layeredDepth, 0)); }, "storage image access to depth/stencil surface", "a two-layer 2D array view of the depth plane was accepted");
+    layeredDepth.depthOrLastArray = 0;
+    layeredDepth.baseArray = 1;
+    ExpectFailure([&] { static_cast<void>(DepthSurfaceStorage(context, {}, layeredDepth, 0)); }, "storage image access to depth/stencil surface", "a 2D array view of layer 1 of the depth plane was accepted");
 }
 
 }
