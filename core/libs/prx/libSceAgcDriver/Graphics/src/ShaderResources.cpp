@@ -522,10 +522,6 @@ std::uint64_t forcedCacheBudget() {
     return forced;
 }
 
-// APS5_STORAGE_CACHE_MIB sizes the storage-image cache apart from the sampled one: 007's menu touches
-// more storage images per frame (render targets sub-allocated from one region, a few surfaces per
-// address) than the 1024 MiB both caches get from APS5_TEXTURE_CACHE_MIB, so each frame evicted and
-// recreated them in LRU order. Unset, the storage budget follows APS5_TEXTURE_CACHE_MIB as before.
 std::uint64_t storageBudget(const Context& context) {
     static const std::uint64_t storage = [] {
         const char* text = std::getenv("APS5_STORAGE_CACHE_MIB");
@@ -817,8 +813,6 @@ struct StorageTextureCache {
     std::unordered_map<StorageKey, std::list<CachedStorageTexture>::iterator, StorageKeyHash> index;
     std::unordered_map<const StorageTexture*, std::list<CachedStorageTexture>::iterator> byImage;
     std::atomic<std::uint64_t> bytes{0};
-    // DIAG (APS5_PROFILE_DRAW or APS5_TRACE_STORAGE_CACHE): budget evictions, and the keys made again
-    // within 2 s of their budget eviction (a working set larger than the budget), under the mutex.
     std::unordered_map<StorageKey, std::chrono::steady_clock::time_point, StorageKeyHash> budgetEvicted;
     std::uint64_t created = 0, hits = 0, evictedByBudget = 0, evictedBytes = 0, recreatedSoon = 0, recreatedBytes = 0;
     std::chrono::steady_clock::time_point reported = std::chrono::steady_clock::now();
