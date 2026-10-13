@@ -2643,6 +2643,25 @@ void GuestBufferMemory::addDescriptorRegion(std::uint64_t address, std::size_t b
             }
             return;
         case BaseOverlap::Partial:
+            {
+                static const bool trace = std::getenv("APS5_TRACE_ADDRESS_OVERLAP") != nullptr;
+                static std::atomic<std::uint32_t> samples{0};
+                if (trace && samples.fetch_add(1, std::memory_order_relaxed) < 16) {
+                    std::uint64_t covered = 0;
+                    std::uint32_t ranges = 0, imported = 0, mirrored = 0, sparse = 0, writable = 0;
+                    for (const auto& region : space->base) {
+                        if (region.begin >= end) break;
+                        if (region.end <= begin) continue;
+                        covered += std::min(end, region.end) - std::max(begin, region.begin);
+                        ++ranges;
+                        imported += region.direct != nullptr;
+                        mirrored += region.mirror != nullptr;
+                        sparse += region.sparse;
+                        writable += region.writable;
+                    }
+                    AgcDriver::ProfilePrint_nid_no_patch("[address-overlap-shape] descriptor bytes %llu, covered %llu, ranges %u, imported %u, mirrored %u, sparse %u, writable %u\n", static_cast<unsigned long long>(end - begin), static_cast<unsigned long long>(covered), ranges, imported, mirrored, sparse, writable);
+                }
+            }
             Spaces().descriptorOverlap.fetch_add(1, std::memory_order_relaxed);
             Spaces().dissolvedOverlap.fetch_add(1, std::memory_order_relaxed);
             dissolveSpace(false);
