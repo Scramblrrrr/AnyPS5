@@ -51,6 +51,7 @@ public:
     ~GuestBlock() {
         GuestAllocations::Mutation().Remove(block);
 #ifdef _WIN32
+        GuestArena::GuestArenaReset_nid_postfix(block, BlockBytes);
         GuestArena::GuestArenaRelease_nid_postfix(block, BlockBytes);
 #else
         std::free(block);
