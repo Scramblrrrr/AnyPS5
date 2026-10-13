@@ -460,12 +460,12 @@ std::map<std::tuple<VkDevice, std::uint64_t, std::uint32_t, std::uint32_t, VkFor
     return *copies;
 }
 
-bool planesAccepted(const DepthTarget& base, const GuestTextureResource& resource, bool integer) {
+bool planesAccepted(const DepthTarget& base, const GuestTextureResource& resource, bool integer, bool depthBits) {
     const bool d16 = base.format == VK_FORMAT_D16_UNORM || base.format == VK_FORMAT_D16_UNORM_S8_UINT;
     const auto format = ResolveTextureFormat(resource.format);
     const bool cube = resource.dimension == TextureDimension::kCube;
     const auto copyFormat = integer ? VK_FORMAT_R16_UINT : d16 ? VK_FORMAT_R16_UNORM : VK_FORMAT_R32_SFLOAT;
-    return format == copyFormat && resource.width == base.extent.width && resource.height == base.extent.height && resource.baseLevel == 0 && resource.lastLevel == 0 && resource.baseArray == 0 && !(cube && resource.depthOrLastArray != 0 && resource.depthOrLastArray != 5) && (resource.dimension == TextureDimension::k2D || resource.dimension == TextureDimension::k2DArray || cube);
+    return (format == copyFormat || depthBits) && resource.width == base.extent.width && resource.height == base.extent.height && resource.baseLevel == 0 && resource.lastLevel == 0 && resource.baseArray == 0 && !(cube && resource.depthOrLastArray != 0 && resource.depthOrLastArray != 5) && (resource.dimension == TextureDimension::k2D || resource.dimension == TextureDimension::k2DArray || cube);
 }
 
 bool sameSurface(const DepthTarget& a, const DepthTarget& b) {
@@ -618,7 +618,7 @@ std::shared_ptr<Texture> DepthSurfaceTexture(const Context& context, std::span<c
     const bool cube = resource.dimension == TextureDimension::kCube;
     const bool layered = cube || (resource.dimension == TextureDimension::k2DArray && resource.depthOrLastArray != 0);
     const bool sampled = stencil || (!layered && !integer);
-    const bool accepted = sampled ? (*found)->SampledAccepts(words, resource) : planesAccepted(base, resource, integer);
+    const bool accepted = sampled ? (*found)->SampledAccepts(words, resource) : planesAccepted(base, resource, integer, depthBits);
     if (!accepted && (*found)->OverwrittenInMemory()) {
         (*found)->retired = true;
         surfacesSerial.fetch_add(1, std::memory_order_release);
