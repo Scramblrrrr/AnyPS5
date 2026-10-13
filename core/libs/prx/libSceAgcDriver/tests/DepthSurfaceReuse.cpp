@@ -21,6 +21,7 @@ constexpr std::uint32_t FormatR32Uint = 20;
 constexpr std::uint32_t FormatR32Float = 22;
 constexpr std::uint32_t FormatR11G11B10Float = 36;
 constexpr std::uint32_t FormatR8G8B8A8Unorm = 56;
+constexpr std::uint32_t TileStandard64KB = 0x9;
 constexpr std::uint32_t TileDepth64KB = 0x18;
 constexpr std::uint32_t TileRenderTarget64KB = 0x1b;
 constexpr std::uint32_t Type2D = 9;
