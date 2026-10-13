@@ -131,6 +131,9 @@ struct AddressSpaceCache {
     std::atomic<std::uint64_t> rebuiltWaiterDrop{0};
     std::atomic<std::uint64_t> unpublished{0};
     std::atomic<std::uint64_t> dissolvedOverlap{0};
+    std::atomic<std::uint64_t> descriptorOverlap{0};
+    std::atomic<std::uint64_t> snapshotOverlap{0};
+    std::atomic<std::uint64_t> descriptorViewMismatch{0};
     std::atomic<std::uint64_t> dissolvedImports{0};
     std::atomic<std::uint64_t> waiterDrops{0};
 };
@@ -2316,6 +2319,7 @@ void GuestBufferMemory::CountAddressBuild(double snapshotsUs) {
     const auto delta = [](std::uint64_t now, std::uint64_t before) { return static_cast<unsigned long long>(now - before); };
     const auto space = AddressSpaceCounters();
     const auto& spaceSeen = totals.spaceSeen;
+    AgcDriver::ProfilePrint_nid_no_patch("[address-overlap] cumulative: descriptors %llu, snapshots %llu, descriptor view mismatch %llu\n", static_cast<unsigned long long>(Spaces().descriptorOverlap.load(std::memory_order_relaxed)), static_cast<unsigned long long>(Spaces().snapshotOverlap.load(std::memory_order_relaxed)), static_cast<unsigned long long>(Spaces().descriptorViewMismatch.load(std::memory_order_relaxed)));
     AgcDriver::ProfilePrint_nid_no_patch("[address] %llu address-based builds (10 s), us per build: lease %.0f, imports pass %.0f, mirror prepare %.0f, compare %.0f (%.0f blocks, %.1f copied), snapshots %.0f; space hits %llu / rebuilds: generation %llu, epoch %llu, device %llu, waiter drop %llu, first %llu; unpublished %llu, dissolved: overlap %llu, imports %llu%s; [bda-table] hits %llu / misses %llu (space tables %llu), first entry: expired %llu, hash differs low %llu / heap %llu, same hash %llu, none held %llu\n", static_cast<unsigned long long>(totals.builds), per(totals.sums.leaseUs), per(totals.sums.importsUs), per(totals.sums.mirrorsUs), per(totals.sums.compareUs), per(static_cast<double>(totals.sums.blocksCompared)), per(static_cast<double>(totals.sums.blocksCopied)), per(totals.snapshotsUs), delta(space.hits, spaceSeen.hits), delta(space.rebuiltGeneration, spaceSeen.rebuiltGeneration), delta(space.rebuiltEpoch, spaceSeen.rebuiltEpoch), delta(space.rebuiltDevice, spaceSeen.rebuiltDevice), delta(space.rebuiltWaiterDrop, spaceSeen.rebuiltWaiterDrop), delta(space.rebuiltFirst, spaceSeen.rebuiltFirst), delta(space.unpublished, spaceSeen.unpublished), delta(space.dissolvedOverlap, spaceSeen.dissolvedOverlap), delta(space.dissolvedImports, spaceSeen.dissolvedImports), space.enabled ? "" : " (cache off)", delta(table.hits, seen.hits), delta(table.misses, seen.misses), delta(table.spaceTables, seen.spaceTables), delta(table.firstExpired, seen.firstExpired), delta(table.firstDiffersLow, seen.firstDiffersLow), delta(table.firstDiffersHeap, seen.firstDiffersHeap), delta(table.firstSameHash, seen.firstSameHash), delta(table.firstEmpty, seen.firstEmpty));
     totals.tableSeen = table;
     totals.spaceSeen = space;
@@ -2633,11 +2637,13 @@ void GuestBufferMemory::addDescriptorRegion(std::uint64_t address, std::size_t b
     switch (baseOverlap(begin, end, &inside)) {
         case BaseOverlap::Inside:
             if (!servesView(*inside, begin)) {
+                Spaces().descriptorViewMismatch.fetch_add(1, std::memory_order_relaxed);
                 dissolveSpace(false);
                 break;
             }
             return;
         case BaseOverlap::Partial:
+            Spaces().descriptorOverlap.fetch_add(1, std::memory_order_relaxed);
             Spaces().dissolvedOverlap.fetch_add(1, std::memory_order_relaxed);
             dissolveSpace(false);
             break;
@@ -2758,6 +2764,7 @@ void GuestBufferMemory::AddSnapshot(const GuestMemorySnapshot& snapshot) {
     // the ~1200 of an address-based build for each captured region.
     const Region* owner = nullptr;
     if (baseOverlap(snapshot.address, end, &owner) == BaseOverlap::Partial) {
+        Spaces().snapshotOverlap.fetch_add(1, std::memory_order_relaxed);
         Spaces().dissolvedOverlap.fetch_add(1, std::memory_order_relaxed);
         dissolveSpace(false);
     }
