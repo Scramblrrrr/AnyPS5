@@ -1808,10 +1808,15 @@ unsigned long long CodeOffset(const void* address) {
 
 namespace {
 std::atomic<void (*)(std::uint64_t, std::size_t)> flushHook{nullptr};
+std::atomic<void (*)(std::uint64_t, std::size_t)> readGuard{nullptr};
 }
 
 void SetFlushHook(void (*hook)(std::uint64_t, std::size_t)) {
     flushHook.store(hook, std::memory_order_release);
+}
+
+void SetReadGuard(void (*guard)(std::uint64_t, std::size_t)) {
+    readGuard.store(guard, std::memory_order_release);
 }
 
 void FlushGpuWrites(std::uint64_t address, std::size_t bytes) {
@@ -1820,6 +1825,7 @@ void FlushGpuWrites(std::uint64_t address, std::size_t bytes) {
 
 void Read(std::uint64_t address, std::span<std::byte> destination, std::size_t alignment) {
     if (destination.empty()) return;
+    if (const auto guard = readGuard.load(std::memory_order_acquire)) guard(address, destination.size());
     FlushGpuWrites(address, destination.size());
     const TimedAccess timed(CounterRead, destination.size());
     CountReadCaller(__builtin_return_address(0));
