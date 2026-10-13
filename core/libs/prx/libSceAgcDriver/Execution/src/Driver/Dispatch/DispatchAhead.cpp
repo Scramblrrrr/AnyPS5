@@ -242,8 +242,6 @@ void Driver::createPipelinesAhead(const Submission& submission, const QueueState
             }
         }
     }
-    // A program is resolved ahead once per registration on this worker, whatever came of it (an HLE
-    // kernel, a stale capture, a variant the dispatch then did not use).
     static thread_local std::set<std::pair<std::uint64_t, const void*>> attempted;
     QueueState scratch = live;
     std::size_t resolves = 0, failures = 0, scanned = 0;

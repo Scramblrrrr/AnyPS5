@@ -285,12 +285,8 @@ struct VulkanDevice::State {
     // references to its objects.
     std::mutex computePipelinesMutex;
     std::map<std::uint64_t, std::shared_ptr<ComputePipelineObjects>> computePipelines;
-    // Variants whose pipeline a thread is creating (computePipeline), under computePipelinesMutex.
     std::map<std::uint64_t, std::shared_future<std::shared_ptr<ComputePipelineObjects>>> computePipelinesPending;
-    // Program addresses with at least one compute pipeline, under computePipelinesMutex: the ahead
-    // scan skips their dispatches without resolving them.
     std::set<std::uint64_t> pipelinePrograms;
-    // The ahead pool (AheadPipelineThreads): jobs in scan order, under aheadMutex.
     struct AheadPipeline {
         std::shared_ptr<const ShaderRecompiler::RecompileResult> shader;
         std::shared_ptr<Graphics::ShaderResources> resources;
@@ -3432,12 +3428,6 @@ std::shared_ptr<PreparedDispatch> VulkanDevice::PrepareDispatch(const ShaderReco
         cached->PrecollectSurfaces();
         phase(PreparedDispatch::PreparePrecollect);
     }
-    // The variant's pipeline, created here without the GPU mutex when the device has none yet: the
-    // driver compiles 007's largest compute pipelines (up to 5.4M SPIR-V words) for up to ~135 s
-    // each, which under the mutex stalled every other queue and the draw committer, and kept two
-    // queues' first dispatches from compiling at once. The dispatch then finds it by its key. A
-    // build whose stage A made no set layout (address-based) creates it in the dispatch as before;
-    // so does APS5_LOCKED_PIPELINES=1.
     static const bool lockedPipelines = std::getenv("APS5_LOCKED_PIPELINES") != nullptr;
     if (!lockedPipelines && shader.PipelineVariantId() != 0) {
         const auto setLayout = cached != nullptr ? cached->Layout() : prepared->resources->Layout();
@@ -3471,8 +3461,6 @@ std::span<const double, 6> VulkanDevice::PreparePhaseMs(const PreparedDispatch& 
 
 namespace {
 
-// Pipelines are shared by dispatches of one compiled variant; descriptor set layouts built from the
-// same bindings are compatible, so the pipeline layout of the first dispatch serves them all.
 std::uint64_t ComputePipelineKey(const ShaderRecompiler::RecompileResult& shader) {
     const std::array<Graphics::CompiledShader, 1> shaders{{{ShaderRecompiler::ShaderStage::Compute, &shader, 0}}};
     const auto pushStages = Graphics::PushConstantStages(shaders);
@@ -3490,8 +3478,6 @@ std::shared_ptr<ComputePipelineObjects> VulkanDevice::computePipeline(const Shad
     const std::uint64_t pipelineKey = ComputePipelineKey(shader);
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     std::promise<std::shared_ptr<ComputePipelineObjects>> creating;
-    // A creation another thread runs (the ahead pool, another queue's dispatch) is joined; when it
-    // fails, this call creates the pipeline itself.
     while (pipelineKey != 0) {
         std::shared_future<std::shared_ptr<ComputePipelineObjects>> pending;
         {
@@ -3579,8 +3565,6 @@ std::shared_ptr<ComputePipelineObjects> VulkanDevice::computePipeline(const Shad
         std::lock_guard pipelines(state->computePipelinesMutex);
         if (programAddress != 0) state->pipelinePrograms.insert(programAddress);
         if (pipelineKey != 0) {
-            // Find-or-insert: objects another dispatch of the variant mapped meanwhile serve this
-            // one too (this call's go with the batch that keeps them).
             objects = state->computePipelines.try_emplace(pipelineKey, objects).first->second;
             state->computePipelinesPending.erase(pipelineKey);
         }
@@ -3670,9 +3654,6 @@ void VulkanDevice::aheadPipelineWorker(bool urgent) {
     }
 }
 
-// The queued jobs are dropped; a creation already running cannot be cancelled and is waited for
-// (up to one driver compile per pool thread, ~110 s for 007's largest), since the device it compiles
-// on is destroyed next.
 void VulkanDevice::stopAheadPipelines() {
     std::size_t running = 0;
     {

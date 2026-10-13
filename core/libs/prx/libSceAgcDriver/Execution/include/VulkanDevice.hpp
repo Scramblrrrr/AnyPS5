@@ -27,7 +27,6 @@ struct PreparedDispatch;
 struct RecipeHit;
 // The record tail shared by an ordinary dispatch and a recipe hit (VulkanDevice::recordDispatch).
 struct RecordedDispatch;
-// A compute variant's shader module, pipeline layout and pipeline (see VulkanDevice::computePipeline).
 struct ComputePipelineObjects;
 
 class VulkanDevice {
@@ -232,19 +231,10 @@ public:
     // APS5_PROFILE_DRAW: the parts of a PrepareDispatch in milliseconds, in the order key, find,
     // precollect, presync, stage A (the driver's 'prepare:' rows).
     static std::span<const double, 6> PreparePhaseMs(const PreparedDispatch& prepared);
-    // Pipelines of the dispatches queued behind the one being prepared, created ahead on a small pool
-    // (APS5_AHEAD_PIPELINES threads, 0 or unset = off): the driver compiles 007's lighting variants
-    // for up to ~110 s each, one after another on the queue that needs them, while the next ones
-    // already sit in its waiting submissions. A dispatch whose variant is being created ahead joins
-    // that creation (computePipeline). The pool takes the result and its stage A build; the build
-    // is released on the pool thread once the pipeline exists.
     static unsigned AheadPipelineThreads();
     static std::uint64_t AheadPipelinesQueued();
     bool NeedsComputePipeline(const ShaderRecompiler::RecompileResult& shader) const;
     bool HasPipelineForProgram(std::uint64_t programAddress) const;
-    // `urgent`: the pipeline of the dispatch that triggered the scan, created on its own pool thread
-    // while the worker resolves the later ones (whose captures take seconds), so the scan neither
-    // delays it nor takes a thread from the ahead jobs.
     bool CreatePipelineAhead(std::shared_ptr<const ShaderRecompiler::RecompileResult> shader, std::span<const Graphics::GuestMemorySnapshot> snapshots, std::uint64_t programAddress, std::shared_ptr<const void> keepAlive, bool urgent = false);
     // `recipe`, when given, receives the Recipe a successful call built for its dispatch-cache
     // variant (design_cpu_final M4): only when the resource cache served or took the object
@@ -320,9 +310,6 @@ private:
     Graphics::Context buildContext() const;
     // Body of Dispatch and DispatchIndirect: `arguments` 0 dispatches x, y, z groups.
     IndirectOutcome dispatch(const ShaderRecompiler::RecompileResult& shader, std::uint32_t x, std::uint32_t y, std::uint32_t z, std::uint64_t arguments, std::span<const Graphics::GuestMemorySnapshot> snapshots, std::uint64_t programAddress, std::shared_ptr<PreparedDispatch> prepared, std::shared_ptr<const Recipe>* recipe);
-    // A compute variant's pipeline objects for set layout `setLayout`: the device's, or created by
-    // this call, or those another thread is creating, waited for (a pipeline is compiled once).
-    // `locked` says whether the caller holds the GPU mutex (the [dispatch] pipeline line).
     std::shared_ptr<ComputePipelineObjects> computePipeline(const ShaderRecompiler::RecompileResult& shader, VkDescriptorSetLayout setLayout, std::uint64_t programAddress, bool locked);
     void aheadPipelineWorker(bool urgent);
     void stopAheadPipelines();
