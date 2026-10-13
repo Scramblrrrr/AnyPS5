@@ -3979,11 +3979,22 @@ void ShaderResources::addSamplerTable(const ShaderRecompiler::DescriptorBinding&
 
 void ShaderResources::resolveImageTables() {
     if (tableBinding == std::numeric_limits<std::size_t>::max()) return;
+    static const bool diagnose = std::getenv("APS5_LOCAL_TABLE_REUSE_DIAG") != nullptr;
+    struct DiagnosticCounts {
+        std::uint64_t tables = 0, reused = 0, noEpoch = 0, capacity = 0;
+        std::uint64_t noLookup = 0, gpuSource = 0, noGeneration = 0, compressed = 0, dcc = 0;
+        std::uint64_t remembered = 0, changedState = 0, pending = 0;
+    };
+    static thread_local DiagnosticCounts diag;
     auto& counters = TextureCounts();
     auto& item = bindings[tableBinding];
     item.imageAllocations.assign(std::min(tableElements, context.imageTableCapacity), std::numeric_limits<std::size_t>::max());
     for (auto& table : tableStages) {
         if (table.images == nullptr) continue;
+        if (diagnose && ++diag.tables % 1000 == 0) {
+            std::fprintf(stderr, "[table-reuse-diag] tables=%llu reused=%llu noEpoch=%llu capacity=%llu noLookup=%llu gpuSource=%llu noGeneration=%llu compressed=%llu dcc=%llu remembered=%llu changedState=%llu pending=%llu\n",
+                static_cast<unsigned long long>(diag.tables), static_cast<unsigned long long>(diag.reused), static_cast<unsigned long long>(diag.noEpoch), static_cast<unsigned long long>(diag.capacity), static_cast<unsigned long long>(diag.noLookup), static_cast<unsigned long long>(diag.gpuSource), static_cast<unsigned long long>(diag.noGeneration), static_cast<unsigned long long>(diag.compressed), static_cast<unsigned long long>(diag.dcc), static_cast<unsigned long long>(diag.remembered), static_cast<unsigned long long>(diag.changedState), static_cast<unsigned long long>(diag.pending));
+        }
         const auto& binding = *table.images;
         const auto faults = table.map[ShaderRecompiler::ImageTableAbi::HeaderElementFaults];
         const auto stageSamplers = std::span<const std::shared_ptr<Sampler>>(samplers).subspan(table.firstSampler, table.samplerCount);
@@ -4017,6 +4028,7 @@ void ShaderResources::resolveImageTables() {
         const auto state = CurrentTableState();
         std::vector<std::shared_ptr<Texture>> cached;
         if (auto* reused = FindReusedTable(context.device, binding, state); reused != nullptr && TableCurrent(*reused) && CachedTableTextures(*reused, cached)) {
+            if (diagnose) ++diag.reused;
             auto next = cached.begin();
             for (std::uint32_t element = 0; element < binding.count; ++element) {
                 const auto words = std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * 8u, 8u);
@@ -4035,10 +4047,12 @@ void ShaderResources::resolveImageTables() {
         }
         ReusedTable fresh;
         bool reusable = state.epoch != 0;
+        if (diagnose && !reusable) ++diag.noEpoch;
         for (std::uint32_t element = 0; element < binding.count; ++element) {
             const auto words = std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * 8u, 8u);
             const auto absolute = static_cast<std::uint64_t>(table.elementBase) + element;
             if (absolute >= context.imageTableCapacity) {
+                if (diagnose && reusable) ++diag.capacity;
                 table.map[faults + element] = rejectTableElement(table, words, capacityMessage());
                 reusable = false;
                 continue;
@@ -4071,6 +4085,13 @@ void ShaderResources::resolveImageTables() {
             if (reusable) {
                 const auto& log = lookupLog();
                 const auto* looked = log.empty() ? nullptr : &log.back();
+                if (diagnose) {
+                    if (looked == nullptr || looked->object != texture.get()) ++diag.noLookup;
+                    else if (looked->source != nullptr) ++diag.gpuSource;
+                    else if (looked->generation == 0) ++diag.noGeneration;
+                    else if (looked->keys != DccKeys::Uncompressed) ++diag.compressed;
+                    else if (resource.dccAddress != 0) ++diag.dcc;
+                }
                 reusable = looked != nullptr && looked->object == texture.get() && looked->source == nullptr && looked->generation != 0 && looked->keys == DccKeys::Uncompressed && resource.dccAddress == 0;
                 if (reusable) {
                     fresh.elements.push_back({MakeTextureKey(context.device, words, components, depthCompare), texture, resource, guestBytes, firstLayer, false, {}});
@@ -4088,7 +4109,12 @@ void ShaderResources::resolveImageTables() {
                 fresh.state = state;
                 fresh.pendingSerial = serial;
                 RememberTable(std::move(fresh), binding);
+                if (diagnose) ++diag.remembered;
+            } else if (diagnose) {
+                ++diag.pending;
             }
+        } else if (diagnose && reusable) {
+            ++diag.changedState;
         }
     }
     reportTextureCounters();
