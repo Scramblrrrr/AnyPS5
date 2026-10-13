@@ -257,6 +257,7 @@ public:
             changed |= propagateCopies();
         }
         removeDeadComputations();
+        removeUnusedFoldedConstants();
         orderPhis();
         std::vector<std::uint32_t> words = header;
         bool inserted = false;
@@ -607,6 +608,22 @@ private:
             removed.insert(id);
             instructions[index].clear();
         }
+    }
+
+    void removeUnusedFoldedConstants() {
+        std::set<std::uint32_t> referenced;
+        for (const auto& instruction : instructions) {
+            if (instruction.empty()) continue;
+            const auto op = Opcode(instruction);
+            if (op == spv::OpName || op == spv::OpDecorate) continue;
+            referenced.insert(instruction.begin() + 1, instruction.end());
+        }
+        std::erase_if(constants, [&](const Instruction& constant) {
+            const auto id = constant.at(2);
+            if (referenced.contains(id)) return false;
+            removed.insert(id);
+            return true;
+        });
     }
 
     std::vector<std::uint32_t> header;
