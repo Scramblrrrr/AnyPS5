@@ -370,7 +370,7 @@ void RunReusedKeys(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
     Require(Count(texels, SurfaceBytes, 0xff) == Threads * 4u, "reused keys: the write-back lost the image's results");
 }
 
-void RunSampledKeysBehindKernel(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
+void RunSampledKeysBehindKernel(AgcDriver::VulkanDevice& device, std::uint8_t* block, std::uint8_t initialKey = 0) {
     auto* texels = block;
     auto* keys = block + KeysOffset;
     std::memset(texels, 0x55, SurfaceBytes);
@@ -380,6 +380,7 @@ void RunSampledKeysBehindKernel(AgcDriver::VulkanDevice& device, std::uint8_t* b
         keys[i + 2] = 0x80;
         keys[i + 3] = 0x3f;
     }
+    if (initialKey != 0) std::memset(keys, initialKey, KeyBytes);
     AgcDriver::GuestMemory::BumpCollectEpoch();
     const auto texture = TextureDescriptor(texels, keys);
     const auto resource = AgcDriver::Graphics::DecodeTextureResource(texture);
@@ -390,14 +391,15 @@ void RunSampledKeysBehindKernel(AgcDriver::VulkanDevice& device, std::uint8_t* b
     const auto tail = BufferDescriptor(keys + KeyBytes / 2, KeyBytes / 2);
     std::copy(tail.begin(), tail.end(), clearTailData.begin());
     std::lock_guard gpu(AgcDriver::GuestMemory::GpuMutex());
-    Require(AgcDriver::Graphics::TextureClearKeys(resource, SurfaceBytes) == DccKeys::Uncompressed, "sampled keys behind a kernel: key bytes that are no keys were not read as stored");
+    const auto before = initialKey == 0x40 ? DccKeys::Clear0001 : DccKeys::Uncompressed;
+    Require(AgcDriver::Graphics::TextureClearKeys(resource, SurfaceBytes) == before, "sampled keys behind a kernel: initial keys read incorrectly");
     Dispatch(device, ClearKeysCode, clearData, false);
     Dispatch(device, ClearKeysCode, clearTailData, false);
     const auto read = AgcDriver::Graphics::TextureClearKeys(resource, SurfaceBytes);
     char message[256];
-    std::snprintf(message, sizeof(message), "a sampled texture whose keys a recorded kernel stores 0000 over read %s before the kernel ran", AgcDriver::Graphics::DccKeysName(read));
-    Require(read == DccKeys::Clear0000, message);
+    std::snprintf(message, sizeof(message), "a sampled texture with initial key 0x%02x whose keys a recorded kernel stores 0000 over read %s before the kernel ran", initialKey, AgcDriver::Graphics::DccKeysName(read));
     device.WaitIdle();
+    Require(read == DccKeys::Clear0000, message);
     RequireKeys(keys, 0x00, "sampled keys behind a kernel: the keys after the kernel");
 }
 
@@ -526,7 +528,7 @@ void RunSharedImport(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
 
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
         std::optional<GuestBlock> block;
         std::optional<GuestBlock> watched;
@@ -535,6 +537,14 @@ int main() {
         std::optional<GuestBlock> window;
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
+        if (argc > 1) {
+            Require(argc == 2 && (std::string(argv[1]) == "--uniform-clear" || std::string(argv[1]) == "--uniform-uncompressed"), "unknown DCC key probe mode");
+            block.emplace(false);
+            const auto initialKey = std::string(argv[1]) == "--uniform-clear" ? 0x40 : 0xff;
+            RunSampledKeysBehindKernel(*device, block->Data(), static_cast<std::uint8_t>(initialKey));
+            std::puts("uniform sampled DCC keys behind a kernel passed");
+            return 0;
+        }
         block.emplace(false);
         Run(*device, block->Data());
         untracked.emplace(false);
@@ -545,6 +555,8 @@ int main() {
         std::optional<GuestBlock> sampled;
         sampled.emplace(false);
         RunSampledKeysBehindKernel(*device, sampled->Data());
+        RunSampledKeysBehindKernel(*device, sampled->Data(), 0xff);
+        RunSampledKeysBehindKernel(*device, sampled->Data(), 0x40);
 #ifdef _WIN32
         shared.emplace(true, true);
         RunSharedImport(*device, shared->Data());
