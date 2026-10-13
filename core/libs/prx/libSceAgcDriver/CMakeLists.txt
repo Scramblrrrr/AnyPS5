@@ -897,7 +897,7 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     if(WIN32)
-        set_tests_properties(agc_host_import_unmap agc_host_import_retirement agc_unit_shadow agc_descriptor_pool_recycling agc_draw_snapshot_cap PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(agc_host_import_unmap agc_host_import_retirement agc_sparse_run_import agc_sparse_run_import_copied agc_unit_shadow agc_descriptor_pool_recycling agc_draw_snapshot_cap PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     add_test(NAME agc_driver_alias_handover COMMAND agc_driver_recorder_tests --alias-handover-only)
