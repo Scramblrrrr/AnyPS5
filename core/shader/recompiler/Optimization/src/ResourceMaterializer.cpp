@@ -1745,7 +1745,22 @@ std::uint32_t decodeTableEntry(const ImageResource& image, std::span<const Image
 
 }
 
-ResolvedImageTables ResourceMaterializer::ResolveImageTables(const ShaderInfo& info, const ResourceSnapshot& snapshot, std::uint64_t memoKey) {
+namespace {
+
+using ImageTableElementKey = std::tuple<std::array<std::uint32_t, 8>, RdnaImageDimension, bool, DescriptorBindingKind>;
+
+struct ImageTableElementKeyHash {
+    std::size_t operator()(const ImageTableElementKey& key) const noexcept {
+        std::uint64_t hash = 14695981039346656037ull;
+        for (const auto word : std::get<0>(key)) hash = (hash ^ word) * 1099511628211ull;
+        hash = (hash ^ static_cast<std::uint32_t>(std::get<1>(key))) * 1099511628211ull;
+        hash = (hash ^ std::get<2>(key)) * 1099511628211ull;
+        return static_cast<std::size_t>((hash ^ static_cast<std::uint32_t>(std::get<3>(key))) * 1099511628211ull);
+    }
+};
+
+template<class ElementIndex>
+ResolvedImageTables resolveImageTables(const ShaderInfo& info, const ResourceSnapshot& snapshot, std::uint64_t memoKey) {
     namespace Abi = ImageTableAbi;
     ResolvedImageTables out;
     std::uint32_t count = 0;
@@ -1772,7 +1787,8 @@ ResolvedImageTables ResourceMaterializer::ResolveImageTables(const ShaderInfo& i
         expected.insert(found->second);
         return Abi::PoisonCode(found->second);
     };
-    std::map<std::tuple<std::array<std::uint32_t, 8>, RdnaImageDimension, bool, DescriptorBindingKind>, std::uint32_t> elementIndex;
+    ElementIndex elementIndex;
+    if constexpr (requires { elementIndex.reserve(512u); }) elementIndex.reserve(512u);
     std::vector<std::uint32_t> directSamplers(info.images.size(), 0u);
     std::vector<bool> reducingSampler(info.images.size(), false);
     for (const auto& pair : info.sampledPairs) {
@@ -1901,6 +1917,13 @@ ResolvedImageTables ResourceMaterializer::ResolveImageTables(const ShaderInfo& i
     out.map.resize(out.map.size() + out.samplers.size() / Abi::SamplerEntryElements, 0u);
     out.faults = static_cast<std::uint32_t>(expected.size() + static_cast<std::size_t>(std::count(outside.begin(), outside.end(), true)));
     return out;
+}
+
+}
+
+ResolvedImageTables ResourceMaterializer::ResolveImageTables(const ShaderInfo& info, const ResourceSnapshot& snapshot, std::uint64_t memoKey) {
+    if (snapshot.tables.words.size() <= 512u) return resolveImageTables<std::map<ImageTableElementKey, std::uint32_t>>(info, snapshot, memoKey);
+    return resolveImageTables<std::unordered_map<ImageTableElementKey, std::uint32_t, ImageTableElementKeyHash>>(info, snapshot, memoKey);
 }
 
 std::vector<ImageResource> ResourceMaterializer::RuntimeImageModes(const ImageResource& image) {
