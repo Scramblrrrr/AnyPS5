@@ -53,21 +53,21 @@ constexpr float DrawnDepth = 0.25f;
 constexpr float DrawnD16Depth = 0.2f;
 constexpr std::uint32_t DrawnD16Bits = 13107;
 
-// image_load of row 0, one texel per thread (x = thread id), slice / face from user data, stored as a dword per
-// thread into the buffer at s[0:3]. The T# is s[4:11], the slice s12.
+
+
 constexpr std::array<std::uint32_t, 3> LoadDims{1u, 3u, 5u};
 
 std::array<std::uint32_t, 11> LoadCode(std::uint32_t dim) {
     return {
-        0x7e020280,                        // v_mov_b32 v1, 0 (y)
-        0x7e04020c,                        // v_mov_b32 v2, s12 (slice or face)
-        0xf0001100u | (dim << 3u),         // image_load v3, v[0:2], s[4:11] dmask:0x1 unorm, dim 2D / CUBE / 2D_ARRAY
+        0x7e020280,
+        0x7e04020c,
+        0xf0001100u | (dim << 3u),
         0x00010300,
-        0xbf8c3f70,                        // s_waitcnt vmcnt(0)
-        0x34080082,                        // v_lshlrev_b32 v4, 2, v0
-        0xe0701000,                        // buffer_store_dword v3, v4, s[0:3], 0 offen
+        0xbf8c3f70,
+        0x34080082,
+        0xe0701000,
         0x80000304,
-        0xbf810000,                        // s_endpgm
+        0xbf810000,
         0xbf810000,
         0xbf810000,
     };
@@ -151,8 +151,8 @@ std::uint32_t Bits(float value) {
     return bits;
 }
 
-// Draws a full-target triangle at depth `z` into the depth surface at `address`, which makes the driver create the
-// surface (the base slice a later plane copy reads from the surface instead of from guest memory).
+
+
 void DrawDepth(AgcDriver::VulkanDevice& device, std::uint64_t address, VkExtent2D extent, VkFormat format, float z) {
     static std::deque<std::vector<std::array<float, 4>>> vertexData;
     vertexData.push_back({{-1.0f, -1.0f, z, 1.0f}, {3.0f, -1.0f, z, 1.0f}, {-1.0f, 3.0f, z, 1.0f}});
@@ -216,7 +216,7 @@ void DrawDepth(AgcDriver::VulkanDevice& device, std::uint64_t address, VkExtent2
     device.WaitIdle();
 }
 
-// Loads row 0 of `slice` of the texture `shape` describes at `texels` into `output` (one dword per thread).
+
 void Load(AgcDriver::VulkanDevice& device, std::uint8_t* texels, const Shape& shape, std::uint32_t slice, std::span<std::uint32_t> output) {
     const auto& code = shape.type == TypeCube ? LoadCube : shape.type == Type2DArray ? LoadArray : Load2D;
     std::vector<std::uint32_t> userData(16, 0u);
@@ -252,7 +252,7 @@ void FillSlice(std::uint8_t* slice, std::uint64_t bytes, std::uint32_t value, st
     for (std::uint64_t offset = 0; offset < bytes; offset += elementBytes) std::memcpy(slice + offset, &value, elementBytes);
 }
 
-// A 3-slice D32 array: slice 0 from the live depth surface, slices 1 and 2 from guest memory (detiled).
+
 void ArrayCase(AgcDriver::VulkanDevice& device, GuestBlock& block, std::span<std::uint32_t> output) {
     auto* base = block.At(ArrayOffset);
     DrawDepth(device, reinterpret_cast<std::uintptr_t>(base), {128, 128}, VK_FORMAT_D32_SFLOAT, DrawnDepth);
@@ -266,7 +266,7 @@ void ArrayCase(AgcDriver::VulkanDevice& device, GuestBlock& block, std::span<std
     }
 }
 
-// A cube over six square D32 slices: face 0 from the live surface, faces 1-5 from guest memory.
+
 void CubeCase(AgcDriver::VulkanDevice& device, GuestBlock& block, std::span<std::uint32_t> output) {
     auto* base = block.At(CubeOffset);
     DrawDepth(device, reinterpret_cast<std::uintptr_t>(base), {128, 128}, VK_FORMAT_D32_SFLOAT, DrawnDepth);
@@ -278,7 +278,7 @@ void CubeCase(AgcDriver::VulkanDevice& device, GuestBlock& block, std::span<std:
     }
 }
 
-// A D16 plane read through an R16_UINT view (a non-depth swizzle, so not flagged as depth bits): the raw depth value.
+
 void IntegerCase(AgcDriver::VulkanDevice& device, GuestBlock& block, std::span<std::uint32_t> output) {
     auto* base = block.At(IntegerOffset);
     DrawDepth(device, reinterpret_cast<std::uintptr_t>(base), {256, 128}, VK_FORMAT_D16_UNORM, DrawnD16Depth);
@@ -286,7 +286,7 @@ void IntegerCase(AgcDriver::VulkanDevice& device, GuestBlock& block, std::span<s
     Expect(output, DrawnD16Bits, "D16 plane as R16_UINT");
 }
 
-// A D16 2D array whose R16_UINT T# has a depth swizzle (flagged as depth bits): both slices' raw values.
+
 void DepthBitsArrayCase(AgcDriver::VulkanDevice& device, GuestBlock& block, std::span<std::uint32_t> output) {
     auto* base = block.At(DepthBitsOffset);
     DrawDepth(device, reinterpret_cast<std::uintptr_t>(base), {256, 128}, VK_FORMAT_D16_UNORM, DrawnD16Depth);
@@ -298,7 +298,7 @@ void DepthBitsArrayCase(AgcDriver::VulkanDevice& device, GuestBlock& block, std:
     Expect(output, 0x1234u, "D16 depth-bits array slice 1");
 }
 
-// A plane array from a later base slice is still refused (its slice offsets are not modeled here).
+
 void RefusalCase(AgcDriver::VulkanDevice& device, GuestBlock& block, std::span<std::uint32_t> output) {
     bool refused = false;
     try {
