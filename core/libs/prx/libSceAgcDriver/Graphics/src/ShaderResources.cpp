@@ -1372,6 +1372,11 @@ bool TableReuseEnabled() {
     return !disabled;
 }
 
+bool MixedTableReuseEnabled() {
+    static const bool enabled = std::getenv("APS5_LOCAL_MIXED_TABLE_REUSE") != nullptr;
+    return enabled;
+}
+
 struct TableState {
     std::uint64_t epoch = 0;
     std::uint64_t unwatched = 0;
@@ -1393,6 +1398,7 @@ struct ReusedTableElement {
     bool firstLayer = false;
     bool rejected = false;
     std::string message;
+    bool gpuBacked = false;
 };
 
 struct ReusedTable {
@@ -1442,18 +1448,36 @@ bool CachedTableTextures(const ReusedTable& table, std::vector<std::shared_ptr<T
     std::lock_guard lock(cache.mutex);
     std::vector<std::list<CachedTexture>::iterator> entries;
     entries.reserve(table.queries.size());
+    cached.resize(table.elements.size());
     for (const auto& element : table.elements) {
-        if (element.rejected) continue;
+        if (element.rejected || element.gpuBacked) continue;
         const auto it = findTexture(cache, element.key);
         if (it == cache.entries.end() || it->texture != element.texture.lock()) return false;
         entries.push_back(it);
     }
-    cached.reserve(entries.size());
+    std::size_t index = 0;
     for (const auto it : entries) {
-        cached.push_back(it->texture);
+        while (table.elements[index].rejected || table.elements[index].gpuBacked) ++index;
+        cached[index++] = it->texture;
         touchTexture(cache, it);
     }
     return true;
+}
+
+bool RefreshGpuTableTextures(const Context& context, ReusedTable& table, const ShaderRecompiler::DescriptorBinding& binding, std::vector<std::shared_ptr<Texture>>& cached) {
+    bool refreshed = false;
+    for (std::size_t index = 0; index < table.elements.size(); ++index) {
+        const auto& element = table.elements[index];
+        if (!element.gpuBacked) continue;
+        try {
+            const auto words = std::span<const std::uint32_t>(binding.guestDescriptor).subspan(index * 8u, 8u);
+            cached[index] = cachedTexture(context, words, element.resource, ViewComponents(element.resource), element.guestBytes, binding.imageDepthCompare.at(index));
+        } catch (const std::runtime_error&) {
+            return false;
+        }
+        refreshed = true;
+    }
+    return !refreshed || (CurrentTableState() == table.state && TableCurrent(table) && CachedTableTextures(table, cached));
 }
 
 void RememberTable(ReusedTable&& table, const ShaderRecompiler::DescriptorBinding& binding) {
@@ -4027,19 +4051,17 @@ void ShaderResources::resolveImageTables() {
         };
         const auto state = CurrentTableState();
         std::vector<std::shared_ptr<Texture>> cached;
-        if (auto* reused = FindReusedTable(context.device, binding, state); reused != nullptr && TableCurrent(*reused) && CachedTableTextures(*reused, cached)) {
+        if (auto* reused = FindReusedTable(context.device, binding, state); reused != nullptr && TableCurrent(*reused) && CachedTableTextures(*reused, cached) && RefreshGpuTableTextures(context, *reused, binding, cached)) {
             if (diagnose) ++diag.reused;
-            auto next = cached.begin();
             for (std::uint32_t element = 0; element < binding.count; ++element) {
                 const auto words = std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * 8u, 8u);
                 const auto& entry = reused->elements[element];
                 if (static_cast<std::uint64_t>(table.elementBase) + element >= context.imageTableCapacity) {
-                    if (!entry.rejected) ++next;
                     table.map[faults + element] = rejectTableElement(table, words, capacityMessage());
                 } else if (entry.rejected) {
                     table.map[faults + element] = rejectTableElement(table, words, entry.message);
                 } else {
-                    bind(element, words, std::move(*next++), entry.resource, entry.guestBytes, entry.firstLayer);
+                    bind(element, words, std::move(cached[element]), entry.resource, entry.guestBytes, entry.firstLayer);
                 }
             }
             counters.tablesReused.fetch_add(1, std::memory_order_relaxed);
@@ -4092,11 +4114,14 @@ void ShaderResources::resolveImageTables() {
                     else if (looked->keys != DccKeys::Uncompressed) ++diag.compressed;
                     else if (resource.dccAddress != 0) ++diag.dcc;
                 }
-                reusable = looked != nullptr && looked->object == texture.get() && looked->source == nullptr && looked->generation != 0 && looked->keys == DccKeys::Uncompressed && resource.dccAddress == 0;
+                const bool gpuBacked = MixedTableReuseEnabled() && looked != nullptr && looked->object == texture.get() && looked->source != nullptr;
+                reusable = gpuBacked || (looked != nullptr && looked->object == texture.get() && looked->source == nullptr && looked->generation != 0 && looked->keys == DccKeys::Uncompressed && resource.dccAddress == 0);
                 if (reusable) {
-                    fresh.elements.push_back({MakeTextureKey(context.device, words, components, depthCompare), texture, resource, guestBytes, firstLayer, false, {}});
-                    fresh.queries.push_back({resource.baseAddress, static_cast<std::size_t>(guestBytes), looked->generation});
-                    fresh.ranges.emplace_back(resource.baseAddress, resource.baseAddress + guestBytes);
+                    fresh.elements.push_back({MakeTextureKey(context.device, words, components, depthCompare), texture, resource, guestBytes, firstLayer, false, {}, gpuBacked});
+                    if (!gpuBacked) {
+                        fresh.queries.push_back({resource.baseAddress, static_cast<std::size_t>(guestBytes), looked->generation});
+                        fresh.ranges.emplace_back(resource.baseAddress, resource.baseAddress + guestBytes);
+                    }
                 }
             }
             bind(element, words, std::move(texture), resource, guestBytes, firstLayer);

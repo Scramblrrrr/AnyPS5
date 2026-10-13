@@ -319,14 +319,56 @@ void RunTests(AgcDriver::VulkanDevice& device, const GuestBlock& block, const Gu
     RunImageStore(device, stores);
 }
 
+void RunMixedTables(AgcDriver::VulkanDevice& device, const GuestBlock& block) {
+    for (std::uint32_t texture = 0; texture < Records; ++texture) {
+        Fill(block, texture, 0.25f);
+        SetRecord(block, texture, texture);
+        Keys[texture] = texture;
+    }
+    const auto srt = Buffer(block.Table(), Records * Stride);
+    const auto keys = Buffer(Keys.data(), static_cast<std::uint32_t>(sizeof(Keys)));
+    std::copy(srt.begin(), srt.end(), Srt.begin());
+    std::copy(keys.begin(), keys.end(), Srt.begin() + 4);
+    SetOutput(Output.data());
+    const auto result = Compile(device, block);
+    AgcDriver::GuestMemory::BumpCollectEpoch();
+    Store(device, block, 23);
+    std::vector<float> stored(Width);
+    for (std::uint32_t x = 0; x < Width; ++x) stored[x] = -4.0f - static_cast<float>(x);
+    for (unsigned warm = 0; warm < 3; ++warm) Require(Dispatch(device, result, 23) == Row(stored.data()), "mixed table warm-up lost the GPU store");
+    const auto before = AgcDriver::Graphics::ImageTableReuses();
+    Require(Dispatch(device, result, 23) == Row(stored.data()), "a reused mixed table lost the GPU store");
+    Require(Dispatch(device, result, 7) == Row(block.Texels(7)), "a reused mixed table lost its CPU entry");
+    Expect(before, 2, 0, "a mixed table's warmed CPU and GPU entries");
+    std::vector<float> cpu(Width * Height);
+    for (std::uint32_t x = 0; x < Width * Height; ++x) cpu[x] = 1.25f + static_cast<float>(x);
+    AgcDriver::GuestMemory::Write(AddressOf(block.Texels(23)), std::as_bytes(std::span(cpu)));
+    Require(Dispatch(device, result, 23) == Row(cpu.data()), "a mixed table retained GPU data over a newer CPU write");
+    Store(device, block, 23);
+    Require(Dispatch(device, result, 23) == Row(stored.data()), "a mixed table retained CPU data over a newer GPU write");
+    Require(Dispatch(device, result, 23) == Row(stored.data()), "a mixed table lost the refreshed GPU view");
+    AgcDriver::Graphics::ClearCachedTextures(device.Device());
+    Require(Dispatch(device, result, 23) == Row(stored.data()), "a mixed table reused an evicted CPU snapshot");
+    Fill(block, Moved, 0.75f);
+    SetRecord(block, 23, Moved);
+    AgcDriver::GuestMemory::BumpCollectEpoch();
+    const auto moved = Compile(device, block);
+    Require(Dispatch(device, moved, 23) == Row(block.Texels(Moved)), "a mixed table ignored a changed descriptor");
 }
 
-int main() {
+}
+
+int main(int argc, char** argv) {
     try {
         GuestBlock block;
         GuestBlock stores(UnimportableBytes);
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
+        if (argc == 2 && std::string(argv[1]) == "--mixed-tables") {
+            RunMixedTables(*device, block);
+            std::puts("mixed image table tests passed");
+            return 0;
+        }
         RunTests(*device, block, stores);
         std::puts("image table reuse tests passed");
         return 0;
