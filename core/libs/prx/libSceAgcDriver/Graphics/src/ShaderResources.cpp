@@ -303,14 +303,18 @@ struct ImageMemoEntry {
     std::uint64_t erasures = 0;
 };
 
-constexpr std::size_t ImageMemoSlots = 1024;
+bool TableLayoutMemo() {
+    static const bool enabled = std::getenv("APS5_LOCAL_TABLE_LAYOUT_MEMO") != nullptr;
+    return enabled;
+}
+
 struct ImageMemoTag {};
 
 ImageMemoEntry& imageMemoSlot(std::span<const std::uint32_t> words) {
-    auto& imageMemo = HostThreadLocal<std::unique_ptr<std::array<ImageMemoEntry, ImageMemoSlots>>, ImageMemoTag>();
-    if (imageMemo == nullptr) imageMemo = std::make_unique<std::array<ImageMemoEntry, ImageMemoSlots>>();
+    auto& imageMemo = HostThreadLocal<std::unique_ptr<std::vector<ImageMemoEntry>>, ImageMemoTag>();
+    if (imageMemo == nullptr) imageMemo = std::make_unique<std::vector<ImageMemoEntry>>(TableLayoutMemo() ? 8192 : 1024);
     const auto hash = hashWords(14695981039346656037ull, words.data(), words.size());
-    return (*imageMemo)[(hash ^ (hash >> 29u)) % ImageMemoSlots];
+    return (*imageMemo)[(hash ^ (hash >> 29u)) % imageMemo->size()];
 }
 
 const ImageMemoEntry& decodedImage(VkDevice device, std::span<const std::uint32_t> words) {
@@ -4051,7 +4055,7 @@ void ShaderResources::resolveImageTables() {
                 const auto shape = binding.imageShapes.at(element);
                 firstLayer = shape == ShaderRecompiler::DescriptorImageShape::Image2D && resource.dimension == TextureDimension::k2DArray;
                 if (!firstLayer && !MatchesGuestDimension(shape, resource.dimension)) throw std::runtime_error("AGC graphics: guest texture dimension disagrees with the table entry's image shape (shape " + std::to_string(static_cast<int>(shape)) + ", dimension " + std::to_string(static_cast<int>(resource.dimension)) + ")");
-                guestBytes = DescribeSurface(resource).guestBytes;
+                guestBytes = TableLayoutMemo() ? decodedImage(context.device, words).guestBytes : DescribeSurface(resource).guestBytes;
                 static_cast<void>(ResolveTextureFormat(resource.format));
             } catch (const std::runtime_error& error) {
                 table.map[faults + element] = rejectTableElement(table, words, error.what());
