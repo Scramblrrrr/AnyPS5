@@ -354,6 +354,8 @@ Throughout the project, every function at every stage either **does exactly what
 
 ### Functional
 
+- [Pending storage-image results outside the write watch](../../core/libs/prx/libSceAgcDriver/Graphics/src/Texture.cpp) retain saved guest bytes per unit to preserve later CPU edits. If a range leaves the watch after its results become pending, no saved bytes exist and storing those results throws; saving the bytes or storing the results when the range leaves the watch is unimplemented.
+
 - [Reused depth storage](../../core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp): a storage view with another extent or a format that cannot hold the cached depth plane uses guest memory. This classification does not prove allocation reuse or preserve a depth writer through an incompatible read-only view. Written storage may retire the previous depth surface; matching read-only depth storage still uses the existing depth seed path.
 
 - [getc_unlocked, putc_unlocked](../../core/libs/prx/libc/src/StandardStreams.cpp) (libc) - byte I/O uses the host unlocked operations; guest EOF/error flags and macro counters follow `FileStream`. Linux status queries use `feof_unlocked`/`ferror_unlocked` because [glibc `feof`](https://github.com/bminor/glibc/blob/d2097651cc57834dbfcaa102ddfacae0d86cfb66/libio/feof.c) and [`ferror`](https://github.com/bminor/glibc/blob/d2097651cc57834dbfcaa102ddfacae0d86cfb66/libio/ferror.c) can acquire the stream lock. Windows uses [the CRT no-lock byte operations](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/fgetc-nolock-fgetwc-nolock) and `feof`/`ferror`, verified under a held stream lock on UCRT. Console behavior and other host CRTs remain unverified.
