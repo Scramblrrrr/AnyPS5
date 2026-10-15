@@ -63,9 +63,17 @@ struct DrawRecipeRecord {
     bool Expired() const;
 };
 
+struct PreparedDrawRecord {
+    std::vector<std::weak_ptr<const DispatchVariant>> stages;
+    std::size_t shaders = 0;
+    std::shared_ptr<const Graphics::PreparedDraw> prepared;
+    const Graphics::PreparedDraw* For(const std::vector<std::shared_ptr<DispatchVariant>>& variants, std::size_t shaderCount) const;
+};
+
 struct DrawEntry {
 
     std::shared_ptr<const DrawDecode> decode;
+    std::shared_ptr<const PreparedDrawRecord> prepared;
 
     std::vector<std::vector<std::shared_ptr<DispatchVariant>>> stages;
 
@@ -132,7 +140,7 @@ struct AheadEntry {
     std::list<std::uint64_t> node;
     std::vector<std::shared_ptr<DispatchVariant>> added;
 };
-AheadEntry BuildAheadEntry(std::uint64_t key, const std::vector<std::shared_ptr<DispatchVariant>>& fresh, std::shared_ptr<const DrawDecode> decode, std::uint64_t shape);
+AheadEntry BuildAheadEntry(std::uint64_t key, const std::vector<std::shared_ptr<DispatchVariant>>& fresh, std::shared_ptr<const DrawDecode> decode, std::uint64_t shape, std::shared_ptr<const Graphics::PreparedDraw> prepared, std::size_t preparedShaders);
 ShaderRecompiler::RecompileRequest DrawStageRequest(const DrawProgram& program, const Graphics::State& graphics, const ShaderRecompiler::ShaderPixelStageInfo& pixel, const std::optional<ShaderRecompiler::ShaderVertexStageInfo>& vertexInfo, std::span<const ShaderRecompiler::MemoryRegion> memory, std::span<const ShaderRecompiler::LinkedProgram> linked, const Pm4::DrawParameters& drawParameters, const ShaderRecompiler::SpirvTarget& target, std::uint32_t pushOffset);
 std::shared_ptr<DispatchVariant> DrawStageVariant(const DrawProgram& program, const StageCapture& capture, const std::optional<ShaderRecompiler::ShaderVertexStageInfo>& vertexInfo, std::span<const Graphics::DecodeRead> decodeReads);
 
