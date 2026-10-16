@@ -52,6 +52,12 @@ struct ImageTableReuseCounts {
     std::uint64_t resolutionsShared = 0;
 };
 
+struct ImageTableColumnMemoCounts {
+    std::uint64_t hits = 0;
+    std::uint64_t layoutsReused = 0;
+    std::uint64_t misses = 0;
+};
+
 struct RuntimeImageModeMatch {
     std::optional<std::uint32_t> mode;
     ImageTableAbi::PoisonReason reason = ImageTableAbi::PoisonReason::InvalidFormat;
@@ -76,6 +82,7 @@ public:
     static ImageTableReuseCounts TableReuse();
     static std::uint64_t EvaluateNanoseconds();
     static std::uint64_t MaterializeNanoseconds();
+    static ImageTableColumnMemoCounts ColumnMemoCounts();
 };
 
 }

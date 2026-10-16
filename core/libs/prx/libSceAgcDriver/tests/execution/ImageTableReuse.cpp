@@ -122,12 +122,26 @@ private:
     std::uint8_t* block = nullptr;
 };
 
-void SetRecord(const GuestBlock& block, std::uint32_t record, std::uint32_t texture) {
+void SetRecord(const GuestBlock& block, std::uint32_t record, const float* texels) {
     auto* words = block.Table() + record * (Stride / 4u);
     std::fill(words, words + Stride / 4u, 0u);
     std::copy(PointClamp.begin(), PointClamp.end(), words);
-    const auto image = Image(block.Texels(texture));
+    const auto image = Image(texels);
     std::copy(image.begin(), image.end(), words + 4);
+}
+
+void SetRecord(const GuestBlock& block, std::uint32_t record, std::uint32_t texture) {
+    SetRecord(block, record, block.Texels(texture));
+}
+
+void SetDccRecord(const GuestBlock& block, std::uint32_t record, std::uint32_t texture) {
+    SetRecord(block, record, texture);
+    const auto metadata = AddressOf(block.Texels(Records - 1)) + TextureBytes;
+    auto* words = block.Table() + record * (Stride / 4u);
+    const auto metadataAddress = metadata >> 8u;
+    words[10] = (1u << 21u) | (static_cast<std::uint32_t>(metadataAddress & 0xffu) << 24u);
+    words[11] = static_cast<std::uint32_t>(metadataAddress >> 8u);
+    std::memset(reinterpret_cast<void*>(metadata), 0xff, 256);
 }
 
 void Fill(const GuestBlock& block, std::uint32_t texture, float bias) {
@@ -248,6 +262,35 @@ void RunImageStore(AgcDriver::VulkanDevice& device, const GuestBlock& block) {
     Require(Row(block.Texels(23)) == Row(stored.data()), "image table reuse: the image store wrote the wrong values");
 }
 
+void RunSelectivePendingWrite(AgcDriver::VulkanDevice& device, const GuestBlock& block, const GuestBlock& separate) {
+    for (std::uint32_t texture = 0; texture < Records; ++texture) {
+        Fill(block, texture, 0.25f);
+        SetRecord(block, texture, texture);
+    }
+    Fill(separate, 0, 0.75f);
+    SetRecord(block, 23, separate.Texels(0));
+    const auto srt = Buffer(block.Table(), Records * Stride);
+    std::copy(srt.begin(), srt.end(), Srt.begin());
+    SetOutput(Output.data());
+    const auto result = Compile(device, block);
+    AgcDriver::GuestMemory::BumpCollectEpoch();
+
+    auto before = AgcDriver::Graphics::ImageTableReuses();
+    Require(Dispatch(device, result, 23) == Row(separate.Texels(0)), "image table reuse: the separate-block entry sampled the wrong texels");
+    Require(Dispatch(device, result, 5) == Row(block.Texels(5)), "image table reuse: a sibling entry sampled the wrong texels");
+    Expect(before, 1, 1, "a table whose images include a separate tracking block");
+
+    Store(device, separate, 0);
+    std::vector<float> stored(Width);
+    for (std::uint32_t x = 0; x < Width; ++x) stored[x] = -4.0f - static_cast<float>(x);
+    before = AgcDriver::Graphics::ImageTableReuses();
+    Require(Dispatch(device, result, 23) == Row(stored.data()), "image table reuse: a pending write to one tracking block kept that entry's old texels");
+    Expect(before, 1, 1, "a pending write invalidating one table element while its siblings remain reusable");
+    AgcDriver::Graphics::StorageTexture::FlushPending(AddressOf(separate.Texels(0)), TextureBytes, nullptr, "test");
+    device.WaitIdle();
+    Require(Row(separate.Texels(0)) == Row(stored.data()), "image table reuse: the separate-block image store wrote the wrong values");
+}
+
 void RunTests(AgcDriver::VulkanDevice& device, const GuestBlock& block, const GuestBlock& stores) {
     for (std::uint32_t texture = 0; texture < Records; ++texture) {
         Fill(block, texture, 0.25f);
@@ -321,6 +364,14 @@ void RunTests(AgcDriver::VulkanDevice& device, const GuestBlock& block, const Gu
     Expect(before, 2, 2, "two tables that differ in one record");
     ExpectWrites(before, 0, 4, "two tables that differ in one record, alternating");
 
+    SetDccRecord(block, Records - 1, Records - 1);
+    AgcDriver::GuestMemory::BumpCollectEpoch();
+    const auto mixed = Compile(device, block);
+    before = AgcDriver::Graphics::ImageTableReuses();
+    Require(Dispatch(device, mixed, 5) == Row(block.Texels(5)), "image table reuse: the first dispatch of a mixed table sampled the wrong clean entry");
+    Require(Dispatch(device, mixed, Records - 1) == Row(block.Texels(Records - 1)), "image table reuse: the DCC entry in a mixed table sampled the wrong texels");
+    Expect(before, 1, 1, "a table with clean entries and one DCC entry that cannot be cached");
+
     SetOutput(block.Texels(13));
     const auto writer = Compile(device, block);
     SetOutput(Output.data());
@@ -342,9 +393,11 @@ int main() {
     try {
         GuestBlock block;
         GuestBlock stores(UnimportableBytes);
+        GuestBlock separate;
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
         RunTests(*device, block, stores);
+        RunSelectivePendingWrite(*device, block, separate);
         std::puts("image table reuse tests passed");
         return 0;
     } catch (const std::exception& error) {
