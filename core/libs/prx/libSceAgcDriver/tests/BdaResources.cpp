@@ -1479,7 +1479,11 @@ void releaseSparse(std::byte* block, std::size_t reserved) {
 }
 
 void importPartlyCommittedWindowTests(const Context& context) {
+#ifdef _WIN32
     constexpr std::size_t piece = 65536;
+#else
+    constexpr std::size_t piece = 4096;
+#endif
     constexpr std::size_t reserved = 8 * piece;
     auto importing = context;
     importing.hostImportAlignment = piece;
@@ -1511,6 +1515,27 @@ void importPartlyCommittedWindowTests(const Context& context) {
     Require(HostImportFor(importing, base + piece - 16, 32) == nullptr, "an import crossed from committed bytes into an uncommitted page");
     const auto* repeated = HostImportFor(importing, base + 32, 32);
     Require(repeated != nullptr && repeated->buffer == buffer, "a repeated committed access did not retain its narrowed import");
+#ifdef _WIN32
+    Require(VirtualAlloc(block + 4 * piece, piece, MEM_COMMIT, PAGE_READWRITE) != nullptr, "cannot commit the separate import island");
+#else
+    Require(mprotect(block + 4 * piece, piece, PROT_READ | PROT_WRITE) == 0, "cannot commit the separate import island");
+#endif
+    const auto* island = HostImportFor(importing, base + 4 * piece + 16, 32);
+    Require(island != nullptr && island->base == base + 4 * piece && island->bytes == piece && island->buffer != buffer, "a separate committed island did not get its own import");
+    Require(HostImportFor(importing, base + piece - 16, 3 * piece + 32) == nullptr, "an import joined committed islands across uncommitted pages");
+#ifdef _WIN32
+    Require(VirtualAlloc(block + piece, piece, MEM_COMMIT, PAGE_READWRITE) != nullptr, "cannot grow the committed import prefix");
+#else
+    Require(mprotect(block + piece, piece, PROT_READ | PROT_WRITE) == 0, "cannot grow the committed import prefix");
+#endif
+    Require(HostImportFor(importing, base + piece - 16, 32) == nullptr, "growing a window replaced a held import without a recorder");
+    {
+        GuestBufferMemory nextBuild(importing);
+        nextBuild.Upload(false);
+        nextBuild.WriteBack();
+    }
+    const auto* grown = HostImportFor(importing, base + piece - 16, 32);
+    Require(grown != nullptr && grown->base == base && grown->bytes == 2 * piece, "a newly committed window did not replace the narrower import");
 }
 
 void sparseHeapTests(const Context& context, const BdaTestAccess& access) {
