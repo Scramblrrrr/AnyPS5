@@ -3822,10 +3822,11 @@ void GuestBufferMemory::copyRegion(Region& region, bool addressable) {
             std::uint64_t backedBytes = 0;
             for (const auto& [begin, end] : region.backed) backedBytes += end - begin;
             const auto backedEnd = region.backed.empty() ? region.begin : region.backed.back().second;
-            const auto neededEnd = std::min(region.end, std::max(backedEnd, std::max(region.lastView, region.begin) + 4u));
+            const auto neededEnd = region.sparse ? std::min(region.end, std::max(backedEnd, std::max(region.lastView, region.begin) + 4u)) : region.end;
             const auto ranges = GuestAllocations::GuestAllocationsAcquire_nid_postfix();
             const auto* owner = containingRange(ranges, region.begin, neededEnd);
-            std::fprintf(stderr, "[copy-sample] n=%llu base=0x%llx bytes=%llu backed=%llu pieces=%zu sparse=%d heap=%d writable=%d host=%d addressable=%d one-owner=%d releasable=%d writes=%d owner-base=0x%llx owner-bytes=%llu\n", static_cast<unsigned long long>(sample), static_cast<unsigned long long>(region.begin), static_cast<unsigned long long>(bytes), static_cast<unsigned long long>(backedBytes), region.backed.size(), region.sparse ? 1 : 0, region.sparseHeap ? 1 : 0, region.writable ? 1 : 0, region.hostBacked ? 1 : 0, addressable ? 1 : 0, owner != nullptr ? 1 : 0, owner != nullptr && owner->releasable ? 1 : 0, WritesOverlap(region.begin, static_cast<std::size_t>(bytes)) ? 1 : 0, static_cast<unsigned long long>(owner != nullptr ? owner->address : 0), static_cast<unsigned long long>(owner != nullptr ? owner->bytes : 0));
+            const auto* firstOwner = containingRange(ranges, region.begin, region.begin + 1);
+            std::fprintf(stderr, "[copy-sample] n=%llu base=0x%llx bytes=%llu backed=%llu pieces=%zu sparse=%d heap=%d writable=%d host=%d addressable=%d one-owner=%d releasable=%d writes=%d first-owner-base=0x%llx first-owner-bytes=%llu\n", static_cast<unsigned long long>(sample), static_cast<unsigned long long>(region.begin), static_cast<unsigned long long>(bytes), static_cast<unsigned long long>(backedBytes), region.backed.size(), region.sparse ? 1 : 0, region.sparseHeap ? 1 : 0, region.writable ? 1 : 0, region.hostBacked ? 1 : 0, addressable ? 1 : 0, owner != nullptr ? 1 : 0, owner != nullptr && owner->releasable ? 1 : 0, WritesOverlap(region.begin, static_cast<std::size_t>(bytes)) ? 1 : 0, static_cast<unsigned long long>(firstOwner != nullptr ? firstOwner->address : 0), static_cast<unsigned long long>(firstOwner != nullptr ? firstOwner->bytes : 0));
         }
     }
     const auto usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | (addressable ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0u);
