@@ -1350,7 +1350,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &hostProperties};
         state->InstanceFunction<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2")(selected, &properties);
         state->hostImportAlignment = hostProperties.minImportedHostPointerAlignment;
-        if (!compileOnly) Graphics::SetHostImportWindow(8ull << 20u);
+        if (!compileOnly) Graphics::SetHostImportWindow((std::getenv("APS5_TEST_IMPORT_WINDOW_16M") != nullptr ? 16ull : 8ull) << 20u);
 #ifdef _WIN32
         // Imported pages are locked; locking is bounded by the process working-set minimum.
         if (const char* value = std::getenv("APS5_WORKING_SET_MIB"); value != nullptr && !compileOnly) {
