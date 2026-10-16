@@ -6689,13 +6689,13 @@ void verifyVolumeBiasTableRejection() {
     auto& column = snapshot.tables.tables.front();
     column.records = 2u;
     column.keys = 2u;
-    column.codes = {0u, 1u};
+    column.codes = SharedValues<std::uint32_t>(std::vector<std::uint32_t>{0u, 1u});
     auto plane = volume;
     plane.dwords[3] = (TableType2D << 28u) | 0xfacu;
     for (const auto [word, bits] : {std::pair{4u, 1u}, std::pair{3u, 1u << 12u}, std::pair{3u, 1u << 16u}, std::pair{5u, 1u << 4u}}) {
         auto invalid = volume;
         invalid.dwords[word] |= bits;
-        snapshot.tables.words = {plane, invalid};
+        column.words = SharedValues<DescriptorValue>(std::vector<DescriptorValue>{plane, invalid});
         const auto resolved = ResourceMaterializer::ResolveImageTables(info, snapshot);
         const auto mapStart = resolved.map.at(Abi::TableHeader(0u) + Abi::TableMapStart);
         const auto good = resolved.map.at(mapStart);
