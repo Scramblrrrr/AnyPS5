@@ -1478,6 +1478,41 @@ void releaseSparse(std::byte* block, std::size_t reserved) {
 #endif
 }
 
+void importPartlyCommittedWindowTests(const Context& context) {
+    constexpr std::size_t piece = 65536;
+    constexpr std::size_t reserved = 8 * piece;
+    auto importing = context;
+    importing.hostImportAlignment = piece;
+    auto* block = reserveSparse(reserved, piece);
+    struct Cleanup {
+        std::byte* block;
+        Context importing;
+        ~Cleanup() {
+            {
+                GuestAllocations::Mutation mutation;
+                mutation.Remove(block);
+            }
+            HostImportFor(importing, reinterpret_cast<std::uintptr_t>(block), 1);
+            SetHostImportRangeWindow(std::uint64_t{64} << 20u);
+            releaseSparse(block, reserved);
+        }
+    } cleanup{block, importing};
+    {
+        GuestAllocations::Mutation mutation;
+        mutation.Add(block, reserved, true, false, true);
+    }
+    std::memset(block, 0x35, piece);
+    SetHostImportRangeWindow(2 * piece);
+    const auto base = reinterpret_cast<std::uintptr_t>(block);
+    Require(AgcDriver::GuestMemory::DescribeCommitted(base, piece).whole && !AgcDriver::GuestMemory::DescribeCommitted(base, 2 * piece).whole, "the import window test has no uncommitted tail");
+    const auto* imported = HostImportFor(importing, base + 16, 32);
+    Require(imported != nullptr && imported->base == base && imported->bytes == piece, "a committed access was refused because its import window includes uncommitted pages");
+    const auto buffer = imported->buffer;
+    Require(HostImportFor(importing, base + piece - 16, 32) == nullptr, "an import crossed from committed bytes into an uncommitted page");
+    const auto* repeated = HostImportFor(importing, base + 32, 32);
+    Require(repeated != nullptr && repeated->buffer == buffer, "a repeated committed access did not retain its narrowed import");
+}
+
 void sparseHeapTests(const Context& context, const BdaTestAccess& access) {
     constexpr std::size_t reserved = 64u << 20u;
     constexpr std::size_t committed = 65536;
@@ -1936,6 +1971,7 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     importJoinTests(context);
     importWholeRangeOverWindowTests(context);
     importRefusedWholeRangeTests(context);
+    importPartlyCommittedWindowTests(context);
     importNeighbouringEdgesTests(context);
     importAtMapOverBudgetTests(context);
     heapMirrorTests(context, access);
