@@ -1491,6 +1491,44 @@ void releaseSparse(std::byte* block, std::size_t reserved) {
 #endif
 }
 
+void importLargePartialJoinTests(const Context& context) {
+    constexpr std::size_t piece = 2u << 20u;
+    constexpr std::size_t allocation = 8 * piece;
+    constexpr std::size_t bytes = 25 * piece / 4;
+    auto* block = static_cast<std::byte*>(::operator new(allocation, std::align_val_t{allocation}));
+    auto importing = context;
+    importing.hostImportAlignment = 65536;
+    struct Cleanup {
+        std::byte* block;
+        Context importing;
+        ~Cleanup() {
+            {
+                GuestAllocations::Mutation mutation;
+                for (std::size_t index = 0; index < 7; ++index) mutation.Remove(block + index * piece);
+            }
+            HostImportFor(importing, reinterpret_cast<std::uintptr_t>(block), 1);
+            SetHostImportWindow(0);
+            ::operator delete(block, std::align_val_t{allocation});
+        }
+    } cleanup{block, importing};
+    std::memset(block, 0x43, allocation);
+    {
+        GuestAllocations::Mutation mutation;
+        for (std::size_t index = 0; index < 7; ++index) mutation.Add(block + index * piece, piece, true, false, true);
+    }
+    const auto begin = reinterpret_cast<std::uintptr_t>(block) + 0x94200;
+    for (const auto window : {4 * piece, 8 * piece}) {
+        SetHostImportWindow(window);
+        GuestBufferMemory memory(importing);
+        memory.AddReadable(begin, bytes);
+        memory.Upload(false);
+        const auto* imported = HostImportFor(importing, begin, bytes);
+        if (window == 4 * piece) Require(imported == nullptr && memory.CopiedBytes() == bytes, "a partial joined binding exceeded its 8 MiB window");
+        else Require(imported != nullptr && imported->bytes == 7 * piece && memory.CopiedBytes() == 0, "a 12.5 MiB binding across seven 2 MiB pieces was copied with a 16 MiB join window");
+        memory.WriteBack();
+    }
+}
+
 void importPartlyCommittedWindowTests(const Context& context) {
 #ifdef _WIN32
     constexpr std::size_t piece = 65536;
@@ -2010,6 +2048,7 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     importWholeRangeOverWindowTests(context);
     importRefusedWholeRangeTests(context);
     importPartlyCommittedWindowTests(context);
+    importLargePartialJoinTests(context);
     importNeighbouringEdgesTests(context);
     importAtMapOverBudgetTests(context);
     heapMirrorTests(context, access);
