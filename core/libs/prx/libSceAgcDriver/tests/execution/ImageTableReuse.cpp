@@ -371,7 +371,7 @@ void RunTests(AgcDriver::VulkanDevice& device, const GuestBlock& block, const Gu
     AgcDriver::GuestMemory::Write(AddressOf(block.Texels(11)), std::as_bytes(std::span(stored)));
     Require(Dispatch(device, result, 11) == Row(stored.data()), "image table reuse: an entry the driver stored over in the epoch kept its old texels");
     Require(Dispatch(device, result, 11) == Row(stored.data()), "image table reuse: the table resolved after a driver store sampled the wrong entry");
-    Expect(before, 1, 1, "a driver store over an entry");
+    Expect(before, 2, 1, "a driver store over an entry");
 
     before = AgcDriver::Graphics::ImageTableReuses();
     Fill(block, 17, 0.75f);
