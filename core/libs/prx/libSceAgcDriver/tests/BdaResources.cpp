@@ -2044,11 +2044,11 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     spaceReadsAcrossImportsMergedTests(context, access);
     spaceWriteMergedPastImportTests(context, access);
     spaceReadOverWritableImportTableTests(context);
+    importLargePartialJoinTests(context);
     importJoinTests(context);
     importWholeRangeOverWindowTests(context);
     importRefusedWholeRangeTests(context);
     importPartlyCommittedWindowTests(context);
-    importLargePartialJoinTests(context);
     importNeighbouringEdgesTests(context);
     importAtMapOverBudgetTests(context);
     heapMirrorTests(context, access);
