@@ -421,8 +421,7 @@ int main() {
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
         RunTests(*device, block, stores);
-        GuestBlock selective;
-        RunSelectivePendingWrite(*device, selective, separate);
+        RunSelectivePendingWrite(*device, block, separate);
         RunMixedDcc(*device);
         std::puts("image table reuse tests passed");
         return 0;
