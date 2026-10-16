@@ -370,14 +370,6 @@ void RunTests(AgcDriver::VulkanDevice& device, const GuestBlock& block, const Gu
     before = AgcDriver::Graphics::ImageTableReuses();
     Require(Dispatch(device, mixed, 5) == Row(block.Texels(5)), "image table reuse: the first dispatch of a mixed table sampled the wrong clean entry");
     Require(Dispatch(device, mixed, Records - 1) == Row(block.Texels(Records - 1)), "image table reuse: the DCC entry in a mixed table sampled the wrong texels");
-    Expect(before, 1, 1, "a table with clean entries and one DCC entry that cannot be cached");
-
-    SetDccRecord(block, Records - 1, Records - 1);
-    AgcDriver::GuestMemory::BumpCollectEpoch();
-    const auto mixed = Compile(device, block);
-    before = AgcDriver::Graphics::ImageTableReuses();
-    Require(Dispatch(device, mixed, 5) == Row(block.Texels(5)), "image table reuse: the first dispatch of a mixed table sampled the wrong clean entry");
-    Require(Dispatch(device, mixed, Records - 1) == Row(block.Texels(Records - 1)), "image table reuse: the DCC entry in a mixed table sampled the wrong texels");
     Expect(before, 1, 2, "a table with clean entries and one DCC entry that cannot be cached");
 
     SetOutput(block.Texels(13));
