@@ -642,6 +642,21 @@ if(BUILD_TESTING)
     add_test(NAME agc_draw_inputs_in_place_driver COMMAND agc_draw_inputs_in_place_driver_tests)
 endif()
 
+add_test_executable(agc_relocation_runs_tests EXCLUDE_FROM_ALL tests/RelocationRuns.cpp)
+target_include_directories(agc_relocation_runs_tests PRIVATE ${LIBS_INCLUDE_DIR})
+set_target_properties(agc_relocation_runs_tests PROPERTIES CXX_EXTENSIONS OFF)
+target_link_libraries(agc_relocation_runs_tests PRIVATE libc)
+configure_windows_unwind(agc_relocation_runs_tests)
+if(BUILD_TESTING)
+    set_target_properties(agc_relocation_runs_tests PROPERTIES EXCLUDE_FROM_ALL OFF)
+    add_test(NAME agc_relocation_runs COMMAND agc_relocation_runs_tests)
+    if(WIN32)
+        set_tests_properties(agc_relocation_runs PROPERTIES ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+
+endif()
+
 add_test_executable(agc_device_fault_tests EXCLUDE_FROM_ALL tests/DeviceFault.cpp)
 target_include_directories(agc_device_fault_tests PRIVATE ${LIBS_INCLUDE_DIR} ${ANYPS5_VULKAN_HEADERS_INCLUDE_DIR})
 set_target_properties(agc_device_fault_tests PROPERTIES CXX_EXTENSIONS OFF)
