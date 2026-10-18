@@ -2076,6 +2076,10 @@ std::filesystem::path planEntryPath(PlanFixture& fixture) {
 int runPlanLoadingProcess(std::string_view mode) {
     if (mode == "--load-plan-switch") setEnvironment("APS5_TRACE_IMAGE_TABLE", "1");
     if (mode == "--load-plan-off") setEnvironment("APS5_NO_PERF_DISK_PLANS", "1");
+    if (mode == "--load-plan-reuse-off") {
+        setEnvironment("APS5_NO_TABLE_SNAPSHOT_REUSE", "1");
+        setEnvironment("APS5_NO_TABLE_RESOLUTION_REUSE", "1");
+    }
     auto fixtures = planFixtures();
     const auto count = fixtures.size();
     std::vector<std::shared_ptr<const IrResourcePlan>> plans;
@@ -2091,6 +2095,8 @@ int runPlanLoadingProcess(std::string_view mode) {
     }
     if (mode == "--load-plan") {
         require(builds == 0u && totals.planHits == count && totals.planMisses == 0u && totals.planLoadFailures == 0u && totals.hits == count && totals.misses == 0u, "the second process ran the front end" + counts);
+    } else if (mode == "--load-plan-reuse-off") {
+        require(builds == 0u && totals.planHits == count && totals.planMisses == 0u && totals.planLoadFailures == 0u && totals.hits == count && totals.misses == 0u, "turning the image table reuse off changed the stored plan or variant keys" + counts);
     } else if (mode == "--load-plan-off") {
         require(builds == count && totals.planHits == 0u && totals.planMisses == 0u && totals.planWrites == 0u && totals.hits == count && totals.misses == 0u, "APS5_NO_PERF_DISK_PLANS=1 used the stored plans or missed the stored variants" + counts);
     } else {
@@ -2110,6 +2116,8 @@ int runPlanLoadingProcess(std::string_view mode) {
         const auto after = ShaderDiskCache::Totals();
         require(FrontEndBuilds() == 1u && after.planHits == count && after.planMisses == 1u, "a changed code word reused a stored plan");
         std::cout << "second process prepared " << count << " shaders from stored plans without running the front end\n";
+    } else if (mode == "--load-plan-reuse-off") {
+        std::cout << "with the image table reuse off, a process loaded all " << count << " stored plans and variants with the same output\n";
     } else if (mode == "--load-plan-off") {
         std::cout << "APS5_NO_PERF_DISK_PLANS=1 ran the front end for all " << count << " shaders with the same output\n";
     } else {
@@ -2153,6 +2161,7 @@ void verifyPlanAcrossProcesses(const char* self) {
     };
     run("--load-plan");
     run("--load-plan-off");
+    run("--load-plan-reuse-off");
     std::vector<std::byte> entry;
     const auto damaged = planEntryPath(fixtures.front());
     require(ReadWholeFile(damaged, entry), "cannot read a stored plan entry");
