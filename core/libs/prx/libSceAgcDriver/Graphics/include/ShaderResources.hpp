@@ -126,7 +126,7 @@ private:
     std::vector<Pool> pools;
     std::vector<Pool> updateAfterBindPools;
     std::vector<VkDescriptorPool> dedicated;
-    std::unordered_map<VkDescriptorSetLayout, std::vector<SetAllocation>> recycled;
+    std::map<std::pair<VkDescriptorSetLayout, std::uint32_t>, std::vector<SetAllocation>> recycled;
     std::vector<SetAllocation> kept;
     Stats stats;
 };
