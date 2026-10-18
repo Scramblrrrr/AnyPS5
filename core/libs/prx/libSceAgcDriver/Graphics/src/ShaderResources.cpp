@@ -3795,7 +3795,7 @@ DescriptorCache::SetAllocation DescriptorCache::Allocate(VkDescriptorSetLayout l
         if (result == VK_SUCCESS) {
             ++stats.sets;
             ++pool.liveSets;
-            return {set, pool.handle, index - 1, updateAfterBind, variable};
+            return {set, pool.handle, index - 1, updateAfterBind, layout, std::vector<VkDescriptorPoolSize>(sizes.begin(), sizes.end()), variableCount, {}};
         }
         if (result != VK_ERROR_OUT_OF_POOL_MEMORY && result != VK_ERROR_FRAGMENTED_POOL) Check(result, "vkAllocateDescriptorSets");
         pool.exhausted = true;
@@ -3816,7 +3816,7 @@ DescriptorCache::SetAllocation DescriptorCache::Allocate(VkDescriptorSetLayout l
     Check(allocate(context.device, &allocation, &set), "vkAllocateDescriptorSets");
     chain.back().liveSets = 1;
     ++stats.sets;
-    return {set, pool, chain.size() - 1, updateAfterBind, variable};
+    return {set, pool, chain.size() - 1, updateAfterBind, layout, std::vector<VkDescriptorPoolSize>(sizes.begin(), sizes.end()), variableCount, {}};
 }
 
 DescriptorCache::SetAllocation DescriptorCache::AllocateRewritten(VkDescriptorSetLayout layout, std::span<const VkDescriptorPoolSize> sizes, bool updateAfterBind, std::optional<std::uint32_t> variableCount) {
