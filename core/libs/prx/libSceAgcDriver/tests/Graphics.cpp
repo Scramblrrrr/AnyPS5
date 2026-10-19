@@ -28,6 +28,11 @@
 #include "ImageTableAbi.hpp"
 #include "SpirvBackend/SpirvSpecialization.hpp"
 #include <spirv/unified1/spirv.hpp>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -5838,6 +5843,31 @@ void samplerTableDeviceLimitTests(std::optional<std::uint32_t> selected = std::n
     }
 }
 
+void hostImportBudgetTests() {
+    using AgcDriver::Graphics::HostImportBudget;
+    constexpr std::uint64_t MiB = 1ull << 20u;
+    constexpr std::uint64_t GiB = 1ull << 30u;
+    VkPhysicalDeviceMemoryProperties memory{};
+    Require(HostImportBudget(memory, 0) == 6 * GiB, "a device without memory heaps does not keep the 6 GiB import budget");
+    Require(HostImportBudget(memory, 32 * GiB) == 16 * GiB, "a device without a host heap does not take half the physical memory");
+    memory.memoryHeapCount = 3;
+    memory.memoryHeaps[0] = {7920 * MiB, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
+    memory.memoryHeaps[1] = {8128 * MiB, 0};
+    memory.memoryHeaps[2] = {256 * MiB, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
+    Require(HostImportBudget(memory, 16 * GiB) == 4064 * MiB, "imports on a 16 GiB machine take more than half its 8128 MiB host heap");
+    memory.memoryHeaps[1].size = 16 * GiB;
+    Require(HostImportBudget(memory, 32 * GiB) == 8 * GiB, "imports on a 32 GiB machine take more than half its 16 GiB host heap");
+    memory.memoryHeaps[1].size = 32 * GiB;
+    Require(HostImportBudget(memory, 64 * GiB) == 16 * GiB, "imports on a 64 GiB machine take more than half its 32 GiB host heap");
+    memory.memoryHeaps[1].size = 3 * GiB;
+    Require(HostImportBudget(memory, 16 * GiB) == 1 * GiB, "a 3 GiB host heap does not keep its 2 GiB reserve");
+    memory.memoryHeaps[1].size = 8128 * MiB;
+    memory.memoryHeaps[0].size = 64 * GiB;
+    Require(HostImportBudget(memory, 16 * GiB) == 4064 * MiB, "a device-local heap counted as the host heap");
+    memory.memoryHeapCount = 1;
+    Require(HostImportBudget(memory, 16 * GiB) == 8 * GiB, "a host heap past memoryHeapCount limits the import budget");
+}
+
 void textureCacheBudgetTests() {
     using AgcDriver::Graphics::TextureCacheBudget;
     constexpr std::uint64_t GiB = 1ull << 30u;
@@ -8749,6 +8779,39 @@ void vertexZeroFillTests() {
     Require(std::all_of(bytes.begin() + static_cast<std::ptrdiff_t>(valid), bytes.end(), [](std::byte value) { return value == std::byte{0}; }), "a vertex fetch past the record count did not read as zeros");
 }
 
+void vertexOverhangTests() {
+    using AgcDriver::Graphics::CopyZeroPaddedDrawInput;
+    constexpr std::size_t page = 65536;
+    constexpr std::size_t stride = 44;
+    constexpr std::size_t overhang = 8;
+#ifdef _WIN32
+    auto* block = static_cast<std::byte*>(VirtualAlloc(nullptr, page * 2, MEM_RESERVE, PAGE_NOACCESS));
+    Require(block != nullptr && VirtualAlloc(block, page, MEM_COMMIT, PAGE_READWRITE) != nullptr, "cannot reserve the guest pages of the overhang test");
+#else
+    void* mapped = mmap(nullptr, page * 2, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    Require(mapped != MAP_FAILED && mprotect(mapped, page, PROT_READ | PROT_WRITE) == 0, "cannot reserve the guest pages of the overhang test");
+    auto* block = static_cast<std::byte*>(mapped);
+#endif
+    constexpr std::size_t offset = 0x650;
+    const auto readable = page - offset;
+    std::fill(block + offset, block + page, std::byte{0x7a});
+    const auto address = reinterpret_cast<std::uint64_t>(block) + offset;
+    {
+        const auto copy = CopyZeroPaddedDrawInput(mockContext(), address, readable + overhang, readable + overhang, stride);
+        const auto bytes = copy.buffer->Bytes();
+        Require(bytes.size() == readable + overhang, "an overhanging vertex fetch changed its size");
+        Require(std::all_of(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(readable), [](std::byte value) { return value == std::byte{0x7a}; }), "an overhanging vertex fetch did not copy the readable bytes");
+        Require(std::all_of(bytes.begin() + static_cast<std::ptrdiff_t>(readable), bytes.end(), [](std::byte value) { return value == std::byte{0}; }), "an overhanging vertex fetch did not zero its last record");
+    }
+    expectFailure([&] { CopyZeroPaddedDrawInput(mockContext(), address, readable + stride, readable + stride, stride); }, "is not readable");
+    expectFailure([&] { CopyZeroPaddedDrawInput(mockContext(), address, readable + overhang, readable + overhang, 0); }, "is not readable");
+#ifdef _WIN32
+    VirtualFree(block, 0, MEM_RELEASE);
+#else
+    munmap(block, page * 2);
+#endif
+}
+
 void vertexZeroFillMergeTests() {
     using AgcDriver::Graphics::PlanVertexCopies;
     using AgcDriver::Graphics::SoloZeroPaddedFetchIndices;
@@ -9429,6 +9492,7 @@ int main(int argc, char** argv) {
         samplerTableDeviceLimitTests();
         misalignedShaderDataTests();
         debugBranchTests();
+        hostImportBudgetTests();
         textureCacheBudgetTests();
         sampledTextureBudgetTests();
         storageTextureBudgetTests();
@@ -9443,6 +9507,7 @@ int main(int argc, char** argv) {
         storeAtLabelTests();
         nullVertexDescriptorTests();
         vertexZeroFillTests();
+        vertexOverhangTests();
         vertexZeroFillMergeTests();
         parallelCompareTests();
         pixelParameterSlotTests();
