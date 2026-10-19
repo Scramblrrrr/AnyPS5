@@ -218,9 +218,9 @@ void ReadUserWordsChangeTheOutput() {
     const auto before = AgcDriver::DriverDetail::Driver::Get().DrawCacheCounters();
     const auto second = draw(0.5f, false);
     const auto after = AgcDriver::DriverDetail::Driver::Get().DrawCacheCounters();
-    const auto near = [](unsigned value, unsigned expected) { return value + 2 >= expected && value <= expected + 2; };
-    Require(near(first, 128), "a pixel stage adding user word 2 (0.25) to a loaded 0.25 wrote " + std::to_string(first) + ", expected 128");
-    Require(near(second, 191), "a pixel stage adding user word 2 changed to 0.5 wrote " + std::to_string(second) + ", expected 191 (" + Counts(after) + ", before: " + Counts(before) + ")");
+    const auto closeTo = [](unsigned value, unsigned expected) { return value + 2 >= expected && value <= expected + 2; };
+    Require(closeTo(first, 128), "a pixel stage adding user word 2 (0.25) to a loaded 0.25 wrote " + std::to_string(first) + ", expected 128");
+    Require(closeTo(second, 191), "a pixel stage adding user word 2 changed to 0.5 wrote " + std::to_string(second) + ", expected 191 (" + Counts(after) + ", before: " + Counts(before) + ")");
 }
 
 }
