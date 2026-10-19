@@ -1924,8 +1924,17 @@ if(BUILD_TESTING)
             --unset=APS5_TRACE_FRAMES --unset=APS5_TRACE_SECONDS --unset=APS5_TRACE_SUMMARY_EVERY
             $<TARGET_FILE:agc_driver_draw_pipeline_trace_tests> disabled)
     set_tests_properties(agc_driver_draw_pipeline_trace_disabled PROPERTIES ENVIRONMENT "APS5_PIPELINED_DRAWS=8" SKIP_RETURN_CODE 77 TIMEOUT 30)
+    add_test(NAME agc_driver_draw_finisher_trace COMMAND agc_driver_draw_pipeline_trace_tests finisher)
+    set_tests_properties(agc_driver_draw_finisher_trace PROPERTIES
+            ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_DRAW_PIPELINE=1;APS5_PIPELINED_DRAWS=8;APS5_TRACE_FRAMES=0:1;APS5_TRACE_EVENTS=64" TIMEOUT 30)
+    set_property(TEST agc_driver_draw_finisher_trace APPEND PROPERTY ENVIRONMENT_MODIFICATION
+            "APS5_TRACE_SECONDS=unset:" "APS5_TRACE_SUMMARY_EVERY=unset:")
+    add_test(NAME agc_driver_draw_finisher_trace_disabled COMMAND ${CMAKE_COMMAND} -E env
+            --unset=APS5_TRACE_FRAMES --unset=APS5_TRACE_SECONDS --unset=APS5_TRACE_SUMMARY_EVERY
+            $<TARGET_FILE:agc_driver_draw_pipeline_trace_tests> finisher-disabled)
+    set_tests_properties(agc_driver_draw_finisher_trace_disabled PROPERTIES ENVIRONMENT "APS5_DRAW_PIPELINE=1;APS5_PIPELINED_DRAWS=8" SKIP_RETURN_CODE 77 TIMEOUT 30)
     if(WIN32)
-        set_tests_properties(agc_driver_draw_pipeline_trace_disabled PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(agc_driver_draw_pipeline_trace_disabled agc_driver_draw_finisher_trace agc_driver_draw_finisher_trace_disabled PROPERTIES ENVIRONMENT_MODIFICATION
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     set(agcDrawPipelineTests agc_driver_draw_write_ranges agc_driver_bda_span_reads agc_driver_copied_writer_copy agc_driver_image_table_reuse agc_driver_depth_storage_reuse agc_driver_staged_clear_sampled_read agc_driver_storage_write_back_overhang agc_driver_write_data_written_ahead agc_driver_gated_dispatch_capture agc_driver_buffer_load_store agc_driver_pipelined_dma agc_driver_pipelined_fill agc_driver_pipelined_predication_read agc_driver_pipelined_predicated_label_order agc_driver_pipelined_metadata_pass agc_driver_draw_cache_reuse agc_driver_draw_data_hit_user_words)

@@ -166,6 +166,7 @@ void DrawFinisher::Enqueue(Job job, Pending held) {
 }
 
 void DrawFinisher::run() {
+    PerformanceTrace::BindThread("draw finisher");
     for (;;) {
         Job* job = nullptr;
         bool failed = false;
