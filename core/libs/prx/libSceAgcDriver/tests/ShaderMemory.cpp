@@ -2732,7 +2732,7 @@ void verifySelectedRecordsWithinLimits(bool pairs, bool direct) {
         require(directTables.tables.size() == 1u, (name + ": the snapshot beside the direct " + (pairs ? "sampler" : "images") + " does not hold one table").c_str());
         const auto& directSnapshot = directTables.tables[mergedDirect->table];
         for (const auto key : {2u, 2u + reads / 2u, 1u + reads}) {
-            require(key < directSnapshot.codes.size() && (directSnapshot.codes[key] & Abi::PoisonFlag) == 0u && directTables.words.at(directSnapshot.codes[key]).dwords == heap[key], (name + ": a key beside the direct " + (pairs ? "sampler" : "images") + " does not bind its record").c_str());
+            require(key < directSnapshot.codes.size() && (directSnapshot.codes[key] & Abi::PoisonFlag) == 0u && directSnapshot.words.at(directSnapshot.codes[key]).dwords == heap[key], (name + ": a key beside the direct " + (pairs ? "sampler" : "images") + " does not bind its record").c_str());
         }
         require(directSnapshot.codes.at(1) == outside && directSnapshot.codes.at(reads + 2u) == outside, (name + ": a key no read selects was bound beside the direct " + (pairs ? "sampler" : "images")).c_str());
         std::cout << name << ": " << reads << " selected reads and " << (pairs ? "1 direct image with a third sampler" : "2 direct images") << ": " << describe(*pastDirect) << ", the reads merged into one table with " << mergedColumn.keyDomains.size() << " key domains\n";
@@ -2752,7 +2752,7 @@ void verifySelectedRecordsWithinLimits(bool pairs, bool direct) {
     require(tables.tables.size() == 1u, (name + ": the snapshot does not hold one table").c_str());
     const auto& snapshot = tables.tables[0];
     for (const auto key : {2u, 2u + limit / 2u, 2u + limit}) {
-        require(key < snapshot.codes.size() && (snapshot.codes[key] & Abi::PoisonFlag) == 0u && tables.words.at(snapshot.codes[key]).dwords == heap[key], (name + ": a key does not bind its record").c_str());
+        require(key < snapshot.codes.size() && (snapshot.codes[key] & Abi::PoisonFlag) == 0u && snapshot.words.at(snapshot.codes[key]).dwords == heap[key], (name + ": a key does not bind its record").c_str());
     }
     require(snapshot.codes.at(1) == outside && snapshot.codes.at(limit + 3u) == outside, (name + ": a key no read selects was bound").c_str());
     if (pairs) return;
@@ -3420,7 +3420,7 @@ void verifyPointerChainImageTable() {
     const auto& tables = compiled.capture->snapshot.tables;
     const auto& snapshot = tables.tables.at(0);
     require(snapshot.keys == Entries && snapshot.codes[0] == snapshot.codes[1] && snapshot.codes[0] != snapshot.codes[2] && (snapshot.codes[0] & Abi::PoisonFlag) == 0u && (snapshot.codes[2] & Abi::PoisonFlag) == 0u, "pointer chain image table: the records behind two pointers do not resolve to one element per distinct T#");
-    require(tables.words.at(snapshot.codes[0]).dwords[0] == descriptor0[0] && tables.words.at(snapshot.codes[2]).dwords[0] == descriptor1[0] && tables.words.at(snapshot.codes[2]).dwords[1] == descriptor1[1], "pointer chain image table: the snapshot words are wrong");
+    require(snapshot.words.at(snapshot.codes[0]).dwords[0] == descriptor0[0] && snapshot.words.at(snapshot.codes[2]).dwords[0] == descriptor1[0] && snapshot.words.at(snapshot.codes[2]).dwords[1] == descriptor1[1], "pointer chain image table: the snapshot words are wrong");
     const auto unmapped = Abi::PoisonCode(static_cast<std::uint32_t>(Abi::PoisonReason::Unmapped));
     require(snapshot.codes[3] == unmapped && snapshot.codes[4] == unmapped && snapshot.codes[255] == unmapped, "pointer chain image table: a record whose chain reaches a null pointer is not Unmapped poison");
     for (std::uint32_t record = 0; record < 3u; record++) {
