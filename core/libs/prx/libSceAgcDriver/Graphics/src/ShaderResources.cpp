@@ -418,19 +418,45 @@ struct LookupRecord {
 };
 
 thread_local std::vector<LookupRecord>* lookupLogSlot = nullptr;
+constexpr std::size_t LookupLogBound = 1024;
+constexpr std::size_t NoBuildLookups = std::numeric_limits<std::size_t>::max();
+thread_local std::size_t buildLookupsStart = NoBuildLookups;
+thread_local bool buildLookupsPastBound = false;
+std::atomic<std::uint64_t> lookupBuildsPastBound{0};
 
 std::vector<LookupRecord>& lookupLog() {
     return ShaderRecompiler::ThreadOwned(lookupLogSlot);
 }
 
 void logLookup(const LookupRecord& record) {
-    // The bound drops the oldest half, never everything: one build's lookups (a few dozen at most)
-    // are the newest records, and a capture must find them even when the bound trips mid-build.
-    constexpr std::size_t bound = 1024;
     auto& log = lookupLog();
-    if (log.size() >= bound) log.erase(log.begin(), log.begin() + bound / 2);
+    if (log.size() >= LookupLogBound) {
+        const auto dropped = std::min(LookupLogBound / 2, buildLookupsStart);
+        if (dropped < LookupLogBound / 2) buildLookupsPastBound = true;
+        log.erase(log.begin(), log.begin() + static_cast<std::ptrdiff_t>(dropped));
+        if (buildLookupsStart != NoBuildLookups) buildLookupsStart -= dropped;
+    }
     log.push_back(record);
 }
+
+class BuildLookups {
+public:
+    BuildLookups() : outermost(buildLookupsStart == NoBuildLookups) { buildLookupsStart = std::min(buildLookupsStart, lookupLog().size()); }
+    ~BuildLookups() {
+        if (!outermost) return;
+        buildLookupsStart = NoBuildLookups;
+        if (buildLookupsPastBound) lookupBuildsPastBound.fetch_add(1, std::memory_order_relaxed);
+        buildLookupsPastBound = false;
+        auto& log = lookupLog();
+        if (log.size() > LookupLogBound) log.erase(log.begin(), log.end() - static_cast<std::ptrdiff_t>(LookupLogBound));
+        if (log.capacity() > LookupLogBound + LookupLogBound / 2) log.shrink_to_fit();
+    }
+    BuildLookups(const BuildLookups&) = delete;
+    BuildLookups& operator=(const BuildLookups&) = delete;
+
+private:
+    bool outermost;
+};
 
 std::shared_ptr<StorageTexture> cachedStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource, std::uint32_t mip, std::uint64_t guestBytes = 0, bool written = false);
 
@@ -2161,6 +2187,7 @@ DescribedSetLayouts DescribeSetLayouts(const Context& context, std::span<const C
 
 void ShaderResources::buildComplete() {
     PerformanceTimer frameTiming("Resources.Complete");
+    BuildLookups lookups;
     Require(!completed, "cannot update a published descriptor heap");
     const auto stageStart = std::chrono::steady_clock::now();
     phaseStart = stageStart;
@@ -2245,7 +2272,8 @@ void ShaderResources::buildComplete() {
                     if (!recorded) continue;
                     const auto& held = allocation.table;
                     auto& counters = TextureCounts();
-                    if (held != nullptr && held->binding == binding.layout.binding && held->runs == runs && std::equal(held->images.begin(), held->images.end(), images.begin() + static_cast<std::ptrdiff_t>(firstImage), images.end(), [](const VkDescriptorImageInfo& a, const VkDescriptorImageInfo& b) { return a.sampler == b.sampler && a.imageView == b.imageView && a.imageLayout == b.imageLayout; })) {
+                    const bool heldAlive = held != nullptr && held->textures != nullptr && std::none_of(held->textures->begin(), held->textures->end(), [](const std::weak_ptr<Texture>& texture) { return texture.expired(); });
+                    if (heldAlive && held->binding == binding.layout.binding && held->runs == runs && std::equal(held->images.begin(), held->images.end(), images.begin() + static_cast<std::ptrdiff_t>(firstImage), images.end(), [](const VkDescriptorImageInfo& a, const VkDescriptorImageInfo& b) { return a.sampler == b.sampler && a.imageView == b.imageView && a.imageLayout == b.imageLayout; })) {
                         keptWrites.emplace_back(firstWrite, writes.size());
                         counters.tableWritesKept.fetch_add(1, std::memory_order_relaxed);
                     } else {
@@ -2749,7 +2777,7 @@ void countRevalidate(bool fast, bool ok, std::chrono::steady_clock::time_point s
     const auto reasons = byReason(profile.fastFails, FastFailNames);
     const auto fullReasons = byReason(profile.fullByReason, FastFailNames);
     const auto fallbacks = byReason(profile.ownFallbacks, OwnRefreshFallbackNames);
-    AgcDriver::ProfilePrint_nid_no_patch("[rescache] revalidate (10 s): %llu calls %.1f ms: fast %llu, full %llu, failed %llu; fast-fail by reason:%s; full walks: T1 refreshed %llu (%llu storage images, %llu view sources, %llu views served by their own pending source, %llu overlaps left by the refresh accepted), full by reason:%s, T1 fallback by reason:%s, proofs verified %llu; fast-fail pending image: own 0 (the query excepts the own object), foreign %llu, snapshot %llu, T1 eligible %llu; keys proven: %llu sampled, %llu storage; epoch gate: %llu registry scans skipped, %llu import loops skipped\n", static_cast<unsigned long long>(profile.calls.exchange(0, std::memory_order_relaxed)), profile.nanoseconds.exchange(0, std::memory_order_relaxed) / 1e6, static_cast<unsigned long long>(profile.fast.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.full.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.failed.exchange(0, std::memory_order_relaxed)), reasons.c_str(), static_cast<unsigned long long>(profile.ownRefreshed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.ownStorageRefreshes.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.ownViewRefreshes.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.ownSourceViews.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.refreshedOverlaps.exchange(0, std::memory_order_relaxed)), fullReasons.c_str(), fallbacks.c_str(), static_cast<unsigned long long>(profile.proofsVerified.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.pendingForeign.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.pendingSnapshot.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.pendingT1Eligible.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.keysProven.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.storageKeysProven.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.serialSkips.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.importSkips.exchange(0, std::memory_order_relaxed)));
+    AgcDriver::ProfilePrint_nid_no_patch("[rescache] revalidate (10 s): %llu calls %.1f ms: fast %llu, full %llu, failed %llu; fast-fail by reason:%s; full walks: T1 refreshed %llu (%llu storage images, %llu view sources, %llu views served by their own pending source, %llu overlaps left by the refresh accepted), full by reason:%s, T1 fallback by reason:%s, proofs verified %llu; fast-fail pending image: own 0 (the query excepts the own object), foreign %llu, snapshot %llu, T1 eligible %llu; keys proven: %llu sampled, %llu storage; epoch gate: %llu registry scans skipped, %llu import loops skipped; lookup log: %llu builds and full walks kept their records past the bound\n", static_cast<unsigned long long>(profile.calls.exchange(0, std::memory_order_relaxed)), profile.nanoseconds.exchange(0, std::memory_order_relaxed) / 1e6, static_cast<unsigned long long>(profile.fast.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.full.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.failed.exchange(0, std::memory_order_relaxed)), reasons.c_str(), static_cast<unsigned long long>(profile.ownRefreshed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.ownStorageRefreshes.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.ownViewRefreshes.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.ownSourceViews.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.refreshedOverlaps.exchange(0, std::memory_order_relaxed)), fullReasons.c_str(), fallbacks.c_str(), static_cast<unsigned long long>(profile.proofsVerified.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.pendingForeign.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.pendingSnapshot.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.pendingT1Eligible.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.keysProven.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.storageKeysProven.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.serialSkips.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(profile.importSkips.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(lookupBuildsPastBound.exchange(0, std::memory_order_relaxed)));
 }
 
 // APS5_NO_EPOCH_REVALIDATE=1: the per-element registry, cache and stamp checks and the per-region
@@ -2776,6 +2804,10 @@ void ShaderResources::captureValidation() {
         if (const auto* found = record(textures[i].get())) validatedTextures[i] = {found->resource, found->bytes, found->keys, found->generation, 0, found->source, found->depth, true};
     }
     lookupLog().clear();
+}
+
+std::size_t ShaderResources::LookupLogCapacity() {
+    return lookupLog().capacity();
 }
 
 // Proves every texture and storage image still current without repeating its lookup: exactly the
@@ -3159,6 +3191,7 @@ bool ShaderResources::Revalidate(std::span<const CompiledShader> shaders, ProofR
     // by stage, binding by binding, so the walk repeats that order.
     const auto fullWalk = [&] {
         lookupLog().clear();
+        BuildLookups lookups;
         std::size_t textureIndex = 0;
         std::size_t storageIndex = 0;
         for (const auto& shader : shaders) {
@@ -5062,11 +5095,18 @@ ShaderResources::~ShaderResources() {
     release();
 }
 
-std::shared_ptr<const TableDescriptors> ShaderResources::keptTable(std::size_t set, std::shared_ptr<const std::vector<std::shared_ptr<Texture>>>& held) noexcept {
+std::shared_ptr<const TableDescriptors> ShaderResources::keptTable(std::size_t set, std::shared_ptr<const std::vector<std::weak_ptr<Texture>>>& held) noexcept {
     const auto& table = tableWrites[set];
     if (!table.written || KeptSets() == 0u || table.firstImage + table.images > descriptorImages.size()) return nullptr;
     try {
-        if (held == nullptr) held = std::make_shared<const std::vector<std::shared_ptr<Texture>>>(std::move(textures));
+        if (held == nullptr) {
+            std::vector<std::weak_ptr<Texture>> weak;
+            weak.reserve(textures.size());
+            for (const auto& texture : textures) {
+                if (texture != nullptr) weak.push_back(texture);
+            }
+            held = std::make_shared<const std::vector<std::weak_ptr<Texture>>>(std::move(weak));
+        }
         auto kept = std::make_shared<TableDescriptors>();
         kept->binding = table.binding;
         kept->runs = table.runs;
@@ -5080,7 +5120,7 @@ std::shared_ptr<const TableDescriptors> ShaderResources::keptTable(std::size_t s
 
 void ShaderResources::release() noexcept {
     // A set from the cache's pool chain goes back to it; a dedicated pool dies with its set.
-    std::shared_ptr<const std::vector<std::shared_ptr<Texture>>> held;
+    std::shared_ptr<const std::vector<std::weak_ptr<Texture>>> held;
     if (cacheAllocation.pool && context.descriptorCache != nullptr) context.descriptorCache->Free(cacheAllocation, keptTable(0, held));
     if (pool) context.Function<PFN_vkDestroyDescriptorPool>("vkDestroyDescriptorPool")(context.device, pool, nullptr);
     if (_layout && ownsLayout) context.Function<PFN_vkDestroyDescriptorSetLayout>("vkDestroyDescriptorSetLayout")(context.device, _layout, nullptr);

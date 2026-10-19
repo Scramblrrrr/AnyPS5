@@ -265,6 +265,7 @@ The code reads environment names through `getenv`, `IsEnvironmentSet`, `kibSetti
 | `APS5_NO_PENDING_HTILE_FILLS` | presence | `core/libs/prx/libSceAgcDriver/Graphics/src/DepthSurface.cpp` |  | reads the HTILE words of a depth target bind even when recorded fills are pending over them, instead of working the words out from the fills |
 | `APS5_NO_PERF_FRONTEND_PAIR` | presence | `core/libs/prx/libSceAgcDriver/tests/ShaderMemory.cpp` |  | disables frontend-pair reuse in the shader-memory test |
 | `APS5_NO_PERF_LAYOUT_PAIR` | presence | `core/libs/prx/libSceAgcDriver/tests/ShaderMemory.cpp` |  | disables layout-pair reuse in the shader-memory test |
+| `APS5_NO_PIPELINED_INDIRECT` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp` |  | drains the draw pipeline at every CPU-path indirect draw instead of queuing it behind the pipeline |
 | `APS5_NO_PIPELINE_CACHE` | presence | `core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp` |  | builds a pipeline per draw instead of reusing cached ones |
 | `APS5_NO_PIPELINE_JOURNAL` | presence | `core/libs/prx/libSceAgcDriver/Graphics/src/PipelineJournal.cpp` |  | keeps the pipeline journal off; 0 leaves it on, and it is also off while the shader disk cache is disabled |
 | `APS5_NO_PIPELINE_LTO` | presence | `core/libs/prx/libSceAgcDriver/Graphics/src/PipelineLibrary.cpp` |  | disables background link-time optimization of graphics pipeline libraries |
@@ -274,6 +275,7 @@ The code reads environment names through `getenv`, `IsEnvironmentSet`, `kibSetti
 | `APS5_NO_PRESENT_EPOCH` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp` |  | keeps the presenter at collect epoch 0 instead of adopting the newest epoch a worker started |
 | `APS5_NO_PRESYNC` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp` |  | disables the stage-A pre-sync of pending writes |
 | `APS5_NO_PROC_TABLE` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp` |  | resolves the device's Vulkan entry points per call instead of filling the function table once |
+| `APS5_NO_QUEUED_DRAW_READ_ORDER` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawPipeline.cpp` |  | stops queued draws and DMA copies from holding back write-backs over the guest memory they read at commit |
 | `APS5_NO_QUEUED_LABELS` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/DeferredLabels.cpp` |  | disables the queued-label table |
 | `APS5_NO_RECORDED_CLEAR` | presence | `core/libs/prx/libSceAgcDriver/Graphics/src/Texture.cpp` |  | waits for a storage image's fast clear in a batch of its own instead of recording it |
 | `APS5_NO_RECORDER_SYNC_DRAWS` | presence | `core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp` |  | gives the draws the recorder waits for their own batch instead of recording them with the wait |
