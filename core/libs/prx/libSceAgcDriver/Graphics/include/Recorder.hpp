@@ -1,6 +1,7 @@
 #ifndef CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_RECORDER_HPP
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_RECORDER_HPP
 
+#include "prx/libSceAgcDriver/Graphics/include/BarrierBatch.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Context.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/PassHazards.hpp"
 #include <unordered_map>
@@ -120,6 +121,7 @@ public:
     void OnComplete(std::function<void()> action);
     void NotePendingWrite(std::uint64_t address, std::size_t bytes);
     void NotePendingFill(std::uint64_t address, std::size_t bytes, std::uint8_t value);
+    void NotePendingWordFill(std::uint64_t address, std::size_t bytes, std::uint32_t word);
     // Notes several [begin, end) ranges and publishes the snapshot once (a dispatch writes many buffers).
     void NotePendingWrites(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges);
     bool PendingWriteOverlaps(std::uint64_t address, std::size_t bytes) const;
@@ -134,6 +136,7 @@ public:
         std::uint64_t end;
         std::uint64_t note;
         int value;
+        std::int64_t word = -1;
     };
     std::vector<PendingWrite> PendingWritesOver(std::uint64_t address, std::size_t bytes) const;
     void PendingWriteRanges(std::vector<std::pair<std::uint64_t, std::uint64_t>>& ranges) const;
@@ -197,6 +200,7 @@ public:
     // ever submitted); WaitSerial(serial) then covers all recorded work.
     std::uint64_t SubmitAndEpoch();
     bool HasTimeline() const { return timeline != VK_NULL_HANDLE; }
+    bool RecordDispatchArguments(VkCommandBuffer commands, VkDeviceAddress source, VkDeviceAddress arguments);
     // Waits until every batch up to `serial` completed on the GPU. Called WITHOUT GuestMemory::GpuMutex:
     // it touches only the immutable timeline semaphore (the caller keeps the device alive). Requires
     // HasTimeline(); the debug switch APS5_NO_TIMELINE makes the device create the recorder without one.
@@ -479,6 +483,8 @@ public:
     // (or APS5_NO_BARRIER_ELISION=1) records every leading barrier, as before.
     static bool MergeBarriers();
     static void CountMerged(CommandClass which);
+    static bool BarrierBatch();
+    static bool ElideCovered(CommandClass which, const BarrierMask& wanted, VkAccessFlags covered);
     // Hazard tracker, counting mode (APS5_BARRIER_VALIDATE=1): every command tells the tracker
     // what it reads and writes (guest ranges through host imports, images) with its stage before
     // it is recorded; the tracker simulates barriers emitted only on a hazard against the accesses
@@ -544,6 +550,7 @@ private:
         std::vector<std::pair<std::uint64_t, std::uint64_t>> writes;
         std::vector<std::uint64_t> writeNotes;
         std::vector<std::int16_t> writeValues;
+        std::vector<std::int64_t> writeWords;
         // In-place reads (see NotePendingRead), dying with the batch: a finished batch's reads are done.
         struct Read {
             std::uint64_t begin;
@@ -711,6 +718,9 @@ private:
     VkPipelineLayout dumpLayout = VK_NULL_HANDLE;
     VkPipeline dumpPipeline = VK_NULL_HANDLE;
     std::shared_ptr<void> segmentPools;
+    int dispatchArgumentState = 0;
+    VkPipelineLayout dispatchArgumentLayout = VK_NULL_HANDLE;
+    VkPipeline dispatchArgumentPipeline = VK_NULL_HANDLE;
     // BeginGpuTiming on the open batch without Commands() (RecordStore times its own run, which
     // Commands() would close).
     std::uint32_t beginTiming(std::uint64_t key);
@@ -772,7 +782,7 @@ private:
     // Appends one range to the open batch; returns whether the snapshot must be rebuilt for it.
     // `ownLabel`: the range is a label's own store (NoteLabel, AfterCompletions), which does not
     // overwrite the table entries it covers; any other range flags them (table mutex, briefly).
-    bool noteWrite(std::uint64_t address, std::size_t bytes, bool ownLabel = false, int value = -1);
+    bool noteWrite(std::uint64_t address, std::size_t bytes, bool ownLabel = false, int value = -1, std::int64_t word = -1);
     // Appends one range to `batch` (open or in flight) and publishes the snapshot if needed.
     void noteWriteOn(Batch& batch, std::uint64_t address, std::size_t bytes, bool ownLabel = false);
     void noteLabelOn(Batch& batch, std::uint64_t address, std::span<const std::byte> bytes, std::uint64_t stamp, std::uint32_t queue, bool behindCompletion = false);
@@ -817,6 +827,7 @@ private:
     // Batches popped from inFlight whose completions have not run yet: their writes stay in the
     // snapshot (a rebuild from inside a completion must not drop them) until finish returns.
     std::vector<const Batch*> finishing;
+    mutable std::shared_ptr<const WriteRanges> published;
     std::uint64_t submissions = 0;
     std::size_t inFlightKeptBytes = 0;
     std::uint64_t writeNoteCount = 0;

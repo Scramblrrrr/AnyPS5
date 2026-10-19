@@ -194,6 +194,7 @@ struct Context {
     bool dualSrcBlend = false;
     bool samplerFilterMinmax = false;
     bool nonSeamlessCubeMap = false;
+    VkSampleCountFlags mergedCoverageSampleCounts = 0;
     bool conservativeRasterization = false;
     bool meshWave32 = false;
     VkBuffer emptyBuffer = VK_NULL_HANDLE;
@@ -211,9 +212,12 @@ struct Context {
     bool runtimeDescriptorArray = false;
     bool partiallyBound = false;
     bool variableDescriptorCount = false;
+    bool sampledImageUpdateAfterBind = false;
     std::uint32_t imageTableCapacity = 0;
     std::uint32_t samplerTableCapacity = 0;
     bool individuallyFreeDescriptorSets = false;
+    bool imageTableUpdateAfterBind = false;
+    bool samplerTableUpdateAfterBind = false;
     bool geometryShader = false;
     bool sampleRateShading = false;
     bool storageImageMultisample = false;
@@ -336,6 +340,8 @@ inline void EndRenderPass(const Context& context, VkCommandBuffer commands) {
 std::uint32_t ImageTableCapacity(const Context& context);
 std::uint32_t StorageTableCapacity(const Context& context);
 std::uint32_t SamplerTableCapacity(const Context& context);
+bool ImageTableUpdateAfterBind(const Context& context);
+bool SamplerTableUpdateAfterBind(const Context& context);
 
 }
 

@@ -3,6 +3,7 @@
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/BufferPool.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Resources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
@@ -32,6 +33,10 @@ namespace AgcDriver::Graphics {
 namespace {
 
 std::uint64_t depthWrites = 0;
+
+std::pair<std::uint32_t, std::uint32_t> DepthBlockExtent(std::uint32_t bytesPerTexel) {
+    return {bytesPerTexel == 4 ? 128u : 256u, bytesPerTexel == 1 ? 256u : 128u};
+}
 
 Recorder* RecorderFor(const Context& context) {
     auto* recorder = Recorder::Active();
@@ -486,6 +491,29 @@ public:
         const auto end = address + bytes;
         if (address < target.address + depthBytes() && target.address < end) return true;
         return target.stencilAddress != 0 && address < target.stencilAddress + stencilBytes() && target.stencilAddress < end;
+    }
+
+    bool CoveredBy(std::span<const std::pair<std::uint64_t, std::uint64_t>> written, std::span<const WrittenStorageExtent> extents) const {
+        const auto reaches = [&](std::uint64_t address, std::uint32_t bytesPerTexel) {
+            const auto [blockWidth, blockHeight] = DepthBlockExtent(bytesPerTexel);
+            const std::array<std::uint32_t, 3> block{65536u, blockWidth, blockHeight};
+            const auto blocksPerRow = (target.extent.width + blockWidth - 1u) / blockWidth;
+            return std::any_of(extents.begin(), extents.end(), [&](const auto& extent) {
+                return extent.address == address && extent.bytesPerElement == bytesPerTexel && extent.block == block && extent.blocksPerRow == blocksPerRow && extent.width >= target.extent.width && extent.height >= target.extent.height;
+            });
+        };
+        const auto covers = [&](std::uint64_t begin, std::uint64_t end) {
+            for (const auto& [writtenBegin, writtenEnd] : written) {
+                if (writtenEnd <= begin) continue;
+                if (writtenBegin > begin) return false;
+                begin = writtenEnd;
+                if (begin >= end) return true;
+            }
+            return false;
+        };
+        const bool d16 = target.format == VK_FORMAT_D16_UNORM || target.format == VK_FORMAT_D16_UNORM_S8_UINT;
+        if (target.samples == 1u && (reaches(target.address, d16 ? 2u : 4u) || (target.stencilAddress != 0 && reaches(target.stencilAddress, 1u)))) return true;
+        return covers(target.address, target.address + depthBytes()) || (target.stencilAddress != 0 && covers(target.stencilAddress, target.stencilAddress + stencilBytes()));
     }
 
     void NoteMemory() {
@@ -1255,16 +1283,90 @@ bool RoutesToNativeDepthOwner(const DepthTarget& target) {
     return std::ranges::any_of(depthGuards(), [&](const auto& range) { return range.active->load(std::memory_order_acquire) && target.htileAddress < range.address + range.bytes && range.address < target.htileAddress + bytes; });
 }
 
+std::optional<std::uint32_t> htileAfterPendingFills(const Recorder& recorder, std::uint64_t address, std::size_t bytes) {
+    auto writes = recorder.PendingWritesOver(address, bytes);
+    std::sort(writes.begin(), writes.end(), [](const Recorder::PendingWrite& a, const Recorder::PendingWrite& b) { return a.note > b.note; });
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> unwritten{{address, address + bytes}};
+    std::optional<std::uint32_t> landed;
+    for (const auto& write : writes) {
+        if (unwritten.empty()) break;
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> rest;
+        bool covered = false;
+        for (const auto& [from, to] : unwritten) {
+            if (write.end <= from || to <= write.begin) {
+                rest.emplace_back(from, to);
+                continue;
+            }
+            covered = true;
+            if (from < write.begin) rest.emplace_back(from, write.begin);
+            if (write.end < to) rest.emplace_back(write.end, to);
+        }
+        unwritten = std::move(rest);
+        if (!covered) continue;
+        if (write.word < 0 || (landed.has_value() && *landed != static_cast<std::uint32_t>(write.word))) return std::nullopt;
+        landed = static_cast<std::uint32_t>(write.word);
+    }
+    if (!landed.has_value()) return std::nullopt;
+    for (const auto& [from, to] : unwritten) {
+        if (from % 4u != 0 || to % 4u != 0) return std::nullopt;
+        const auto* words = reinterpret_cast<const volatile std::uint32_t*>(from);
+        for (std::uint64_t index = 0; index < (to - from) / 4u; ++index) {
+            if (words[index] != *landed) return std::nullopt;
+        }
+    }
+    return landed;
+}
+
+bool storeHtileOnGpu(const Context& context, Recorder& recorder, std::uint64_t address, std::size_t bytes, std::uint32_t word) {
+    if (address % 4u != 0 || bytes % 4u != 0) return false;
+    const auto* import = HostImportFor(context, address, bytes);
+    if (import == nullptr) return false;
+    recorder.FlushKeyStoresOverlapping(address, bytes);
+    recorder.FlushStoresOverlapping(address, bytes);
+    const auto commands = recorder.Commands();
+    const auto timing = recorder.BeginGpuTiming(Recorder::CommandClass::Fill);
+    RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+    Recorder::CountBarriers(Recorder::CommandClass::Fill);
+    context.Resolved(&DeviceFunctions::cmdFillBuffer, "vkCmdFillBuffer")(commands, import->buffer, address - import->base, bytes, word);
+    constexpr VkAccessFlags filledAccess = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_HOST_READ_BIT;
+    RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, filledAccess);
+    Recorder::CountBarriers(Recorder::CommandClass::Fill);
+    recorder.EndGpuTiming(timing, bytes);
+    recorder.MarkCovered(filledAccess);
+    recorder.NotePendingWordFill(address, bytes, word);
+    GuestMemory::MarkWritten(address, bytes);
+    return true;
+}
+
 VkImageAspectFlags storeBackClearedHtile(const Context& context, const DepthTarget& target) {
     if (target.htileAddress == 0) return 0;
     const auto bytes = static_cast<std::size_t>(HtileMetadataBytes(target.extent));
     if (!GuestMemory::Accessible(reinterpret_cast<const void*>(target.htileAddress), bytes, true)) return 0;
     const auto collected = GuestMemory::CollectWrites(target.htileAddress, bytes);
     auto* recorder = RecorderFor(context);
-    if (recorder == nullptr || !recorder->PendingWriteOverlaps(target.htileAddress, bytes)) {
+    const bool pending = recorder != nullptr && recorder->PendingWriteOverlaps(target.htileAddress, bytes);
+    if (!pending) {
         std::lock_guard lock(htileReadsMutex());
         const auto found = htileReads().find(target.htileAddress);
         if (found != htileReads().end() && found->second != 0 && GuestMemory::UnchangedSince(target.htileAddress, bytes, found->second)) return 0;
+    }
+    static const bool pendingFills = std::getenv("APS5_NO_PENDING_HTILE_FILLS") == nullptr;
+    if (pending && pendingFills) {
+        std::lock_guard gpu(GuestMemory::GpuMutex());
+        if (const auto landed = htileAfterPendingFills(*recorder, target.htileAddress, bytes)) {
+            const VkImageAspectFlags cleared = (VK_IMAGE_ASPECT_DEPTH_BIT | (target.htileStencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0u)) & HtileFillClears(*landed, target.htileStencil);
+            if (cleared == 0) {
+                std::lock_guard lock(htileReadsMutex());
+                htileReads()[target.htileAddress] = collected;
+                return 0;
+            }
+            if (storeHtileOnGpu(context, *recorder, target.htileAddress, bytes, expandedHtileWord(*landed, target.htileStencil, cleared))) {
+                const auto generation = GuestMemory::CollectWrites(target.htileAddress, bytes);
+                std::lock_guard lock(htileReadsMutex());
+                htileReads()[target.htileAddress] = generation;
+                return cleared;
+            }
+        }
     }
     std::vector<std::uint32_t> words(bytes / 4u);
     GuestMemory::Read(target.htileAddress, std::as_writable_bytes(std::span(words)), 4);
@@ -1291,8 +1393,7 @@ std::uint64_t DepthSurfacesReleased() {
 }
 
 std::uint64_t DepthSliceBytes(VkExtent2D extent, std::uint32_t bytesPerTexel) {
-    const std::uint32_t blockWidth = bytesPerTexel == 4 ? 128u : 256u;
-    const std::uint32_t blockHeight = bytesPerTexel == 1 ? 256u : 128u;
+    const auto [blockWidth, blockHeight] = DepthBlockExtent(bytesPerTexel);
     const auto width = static_cast<std::uint64_t>((extent.width + blockWidth - 1) / blockWidth * blockWidth);
     const auto height = static_cast<std::uint64_t>((extent.height + blockHeight - 1) / blockHeight * blockHeight);
     return width * height * bytesPerTexel;
@@ -1834,6 +1935,13 @@ void RetireDepthSurfaces(VkDevice device, std::uint64_t address, std::uint64_t b
     std::lock_guard lock(surfacesMutex());
     for (const auto& surface : surfaces()) {
         if (surface->context.device == device && !surface->retired && surface->Overlaps(address, bytes)) retire(*surface);
+    }
+}
+
+void RetireCoveredDepthSurfaces(VkDevice device, std::span<const std::pair<std::uint64_t, std::uint64_t>> written, std::span<const WrittenStorageExtent> extents) {
+    std::lock_guard lock(surfacesMutex());
+    for (const auto& surface : surfaces()) {
+        if (surface->context.device == device && !surface->retired && surface->CoveredBy(written, extents)) retire(*surface);
     }
 }
 
