@@ -541,3 +541,11 @@ The code reads environment names through `getenv`, `IsEnvironmentSet`, `kibSetti
 | `APS5_FORCE_SDR` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/HostHdr.cpp` | unset | suppresses advertised HDR availability while preserving host capability detection |
 | `APS5_TEST_IMPORT_WINDOW_16M` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp` | unset | selects a 16 MiB host import window instead of 8 MiB for comparison runs |
 | `APS5_SAMPLE_BUFFER_COPIES` | presence | `core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp` | unset | records sampled copied-buffer diagnostics for local profiling |
+
+| `APS5_NO_VOUCHED_VALIDATION` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Dispatch/VariantValidation.cpp` | unset | disables vouched draw-cache validation |
+| `APS5_DRAW_INPUTS_IN_PLACE` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp` | unset | enables in-place draw inputs regardless of the default driver policy |
+| `APS5_NO_DRAW_INPUTS_IN_PLACE` | presence | `core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp` | unset | disables in-place draw inputs and overrides the enabling switch |
+| `APS5_NO_TABLE_REPLAY` | presence | `core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp` | unset | disables image-table binding replay |
+| `APS5_KEPT_DESCRIPTOR_SETS` | integer | `core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp` | 8 | bounds descriptor sets retained for reuse |
+| `APS5_NO_TABLE_SNAPSHOT_REUSE` | presence | `core/shader/recompiler/Optimization/src/ResourceMaterializer.cpp` | unset | disables image-table snapshot reuse |
+| `APS5_NO_TABLE_RESOLUTION_REUSE` | presence | `core/shader/recompiler/Optimization/src/ResourceMaterializer.cpp` | unset | disables reuse of resolved image tables |
