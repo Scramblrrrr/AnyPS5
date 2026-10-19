@@ -269,6 +269,7 @@ void VouchUnderQueuedDraws(const GuestBlock& block) {
     for (std::uint32_t record = 0; record < WideRecords; ++record) SetWideRecord(block, record, (1u + record % 15u) * Aliases);
     const auto low = WideRecord(block, 0u);
     const auto bytes = static_cast<std::size_t>(WideRecord(block, WideRecords - 1u) + 32u - low);
+    static_cast<void>(Driver::Get());
     const ShaderRecompiler::SrtWriteStamp stamp{AgcDriver::GuestMemory::CollectWrites(low, bytes), GuestAllocations::GuestAllocationsGeneration_nid_postfix()};
     Require(stamp.generation != 0u, "image table vouch under queued draws: the table is not write-watched");
     auto& pipeline = DrawPipeline::Queue0();
