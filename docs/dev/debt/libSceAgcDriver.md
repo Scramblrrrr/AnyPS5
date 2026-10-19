@@ -190,3 +190,7 @@
 - [Widened epoch collects on Windows](../../../core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp) (libSceAgcDriver) - a collect of at most one 64 KiB block within a collect epoch walks the whole block, as on Linux, so the epoch's memo serves the block's other ranges. Windows coverage does not know which pages of the block are committed or inaccessible, and a walk refuses such a range before it collects anything: the requested pages are then walked instead, so that collect costs two calls and its block's other ranges are walked on their own.
 
 - [HDR output override](../../../core/libs/prx/libSceAgcDriver/Execution/src/HostHdr.cpp) - setting `APS5_FORCE_SDR` suppresses HDR availability reported to titles while retaining the detected display and surface capabilities. It selects the existing SDR presentation path; it does not add support for floating-point BT.2100 PQ buffers (`0xC001070722000000` and `0xC001070700000000`), whose presentation remains refused. The override does not change the host display settings.
+
+### Opt-in draw paths
+
+- [Draw finisher](../../../core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawPipeline.cpp) (`APS5_DRAW_PIPELINE`) - opt-in. The Linux main-image page table it adds matches what Windows already does by default.
