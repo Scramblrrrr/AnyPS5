@@ -3372,6 +3372,37 @@ bool sparseRunImportTests(const Device& device, bool copied) {
         });
     }
     recorder.Sync();
+    map();
+    ClearHostImports(context.device);
+    SetHostImportWindow(2 * unit);
+    VkBuffer stableInteriorBuffer = VK_NULL_HANDLE;
+    std::size_t interiorIteration = 0;
+    for (const auto offset : {unit / 2, 2 * unit + unit / 2 + 32, unit / 2, 2 * unit + unit / 2 + 32}) {
+        constexpr auto bytes = 2 * unit + 16;
+        GuestBufferMemory memory(context);
+        memory.AddReadable(address + offset, bytes);
+        memory.Upload(false);
+        std::uint32_t adjustment = 0;
+        const auto view = memory.Descriptor(address + offset, bytes, adjustment);
+        const auto* import = HostImportFor(context, address + offset, bytes);
+        Require(import != nullptr && view.buffer == import->buffer && memory.CopiedBytes() == 0, "a native large interior view was copied instead of joined");
+        Require(view.offset + adjustment == offset && view.range == bytes + adjustment, "a native interior import changed the descriptor extent");
+        if (interiorIteration == 1) stableInteriorBuffer = import->buffer;
+        if (interiorIteration >= 2) Require(import->buffer == stableInteriorBuffer, "alternating native interior views re-imported their overlapping owners");
+        ++interiorIteration;
+        Buffer readback(context, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        {
+            std::unique_lock gpu(GpuMutex());
+            const auto commands = recorder.Commands();
+            RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            CopyBuffer(context, commands, view.buffer, view.offset + adjustment, readback.Handle(), 0, bytes);
+            RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+            recorder.Sync();
+        }
+        readback.Invalidate();
+        Require(std::memcmp(readback.Bytes().data(), guest + offset, bytes) == 0, "the GPU read different bytes from a large interior import");
+        memory.WriteBack();
+    }
     std::cout << "sparse run import tests passed (in place)\n";
     return true;
 }

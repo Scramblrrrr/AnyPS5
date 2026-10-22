@@ -22,6 +22,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <tuple>
 #include <mutex>
 #include <new>
 #include <string>
@@ -553,6 +554,91 @@ void importJoinTests(const Context& context) {
     Require(HostImportFor(importing, first, 16) == nullptr && HostImportFor(importing, third, 16) == nullptr, "the host imports outlived their ranges");
     SetHostImportWindow(0);
     ::operator delete(block, std::align_val_t{window});
+}
+
+void interiorImportJoinTests(const Context& context) {
+    constexpr std::size_t piece = 65536;
+    constexpr std::size_t window = 2 * piece;
+    for (const bool acquired : {false, true}) {
+        const std::size_t owners = acquired ? 3 : 5;
+        auto importing = context;
+        importing.hostImportAlignment = piece;
+        auto* guest = static_cast<std::uint8_t*>(::operator new(owners * piece, std::align_val_t{window}));
+        struct Cleanup {
+            const Context& context;
+            std::uint8_t* guest;
+            std::size_t owners;
+            bool middleRemoved = false;
+            ~Cleanup() {
+                ClearHostImports(context.device);
+                {
+                    GuestAllocations::Mutation mutation;
+                    for (std::size_t index = 0; index < owners; ++index) if (index != 1 || !middleRemoved) mutation.Remove(guest + index * piece);
+                }
+                SetHostImportWindow(0);
+                ::operator delete(guest, std::align_val_t{window});
+            }
+        } cleanup{importing, guest, owners};
+        ClearHostImports(importing.device);
+        SetHostImportWindow(window);
+        std::memset(guest, 0x53, owners * piece);
+        {
+            GuestAllocations::Mutation mutation;
+            for (std::size_t index = 0; index < owners; ++index) mutation.Add(guest + index * piece, piece, true, false, true);
+        }
+        const auto base = reinterpret_cast<std::uint64_t>(guest);
+        const auto bind = [&](std::uint64_t begin, std::size_t bytes) {
+            GuestBufferMemory memory(importing);
+            if (acquired) memory.AcquireRegistered();
+            memory.AddReadable(begin, bytes);
+            memory.Upload(false);
+            std::uint32_t adjustment = 0;
+            const auto view = memory.Descriptor(begin, bytes, adjustment);
+            const auto copied = memory.CopiedBytes();
+            memory.WriteBack();
+            return std::tuple{view.buffer, view.offset + adjustment, copied};
+        };
+        Require(std::get<2>(bind(base + 2 * piece - 16, 32)) == 32, "a tiny interior crossing joined small import ranges");
+        const auto begin = base + piece / 2;
+        constexpr auto bytes = window + 16;
+        const auto [buffer, offset, copied] = bind(begin, bytes);
+        const auto* joined = HostImportFor(importing, begin, bytes);
+        Require(joined != nullptr && joined->base == base && joined->bytes == 3 * piece && buffer == joined->buffer && copied == 0, "a large interior view was not imported over its adjacent owners");
+        Require(offset == begin - base, "a large interior import changed the descriptor offset");
+        Require(std::get<0>(bind(begin, bytes)) == buffer && std::get<2>(bind(begin, bytes)) == 0, "a large interior import was not reused");
+        if (!acquired) {
+            const auto other = base + 2 * piece + piece / 2 + 32;
+            const auto [grownBuffer, grownOffset, grownCopied] = bind(other, bytes);
+            const auto* grown = HostImportFor(importing, other, bytes);
+            Require(grown != nullptr && grown->base == base && grown->bytes == 5 * piece && grownBuffer == grown->buffer && grownCopied == 0 && grownOffset == other - base, "overlapping interior imports did not grow to their owners' union");
+            for (int repeat = 0; repeat < 4; ++repeat) {
+                for (const auto address : {begin, other}) {
+                    const auto [keptBuffer, keptOffset, keptCopied] = bind(address, bytes);
+                    Require(keptBuffer == grownBuffer && keptCopied == 0 && keptOffset == address - base, "alternating interior views retired and re-imported their shared owners");
+                }
+            }
+            {
+                GuestBufferMemory memory(importing);
+                if (acquired) memory.AcquireRegistered();
+                memory.AddReadable(begin, bytes);
+                memory.AddReadable(other, bytes);
+                memory.Upload(false);
+                for (const auto address : {begin, other}) {
+                    std::uint32_t adjustment = 0;
+                    const auto view = memory.Descriptor(address, bytes, adjustment);
+                    Require(view.buffer == grownBuffer && view.offset + adjustment == address - base, "two interior views in one build lost their shared import");
+                }
+                Require(memory.CopiedBytes() == 0, "two interior views in one build copied their shared owners");
+                memory.WriteBack();
+            }
+        }
+        {
+            GuestAllocations::Mutation mutation;
+            mutation.Remove(guest + piece);
+            cleanup.middleRemoved = true;
+        }
+        Require(HostImportFor(importing, begin, bytes) == nullptr, "an interior import outlived a removed owner");
+    }
 }
 
 class ImportBudgetRanges {
@@ -3496,6 +3582,7 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     spaceWriteMergedPastImportTests(context, access);
     spaceReadOverWritableImportTableTests(context);
     importJoinTests(context);
+    interiorImportJoinTests(context);
     importCoverageHintBudgetTests(context, access);
     failedImportJoinProbeBudgetTests(context, access);
     importWholeRangeOverWindowTests(context);
