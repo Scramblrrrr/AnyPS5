@@ -495,6 +495,7 @@ ResidentBuffer::ResidentBuffer(const Context& context, std::uint64_t base, std::
         type = context.DeviceMemoryType(requirements.memoryTypeBits, SlabBytes, "a resident heap mirror slab");
         memory = residentMemory(context, type, requirements.memoryTypeBits);
         slots.resize(static_cast<std::size_t>(size / BlockSize));
+        uploads.assign(slots.size(), 0);
         std::vector<bool> wanted(slots.size(), false);
         for (const auto& [first, last] : backed) {
             if (first >= last) continue;
@@ -624,6 +625,13 @@ void ResidentBuffer::MarkChanged(std::uint64_t begin, std::uint64_t end, bool ze
     devices.pending.push_back(weak_from_this());
 }
 
+std::uint64_t ResidentBuffer::UploadSerial(std::uint64_t begin, std::uint64_t end) const {
+    std::uint64_t serial = 0;
+    if (begin >= end) return serial;
+    for (auto index = blockIndex(begin); index <= blockIndex(end - 1); ++index) serial = std::max(serial, uploads[index]);
+    return serial;
+}
+
 std::shared_ptr<Buffer> ResidentBuffer::RecordReadback(VkCommandBuffer commands, std::uint64_t guest, std::uint64_t bytes) const {
     Require(guest >= origin && bytes <= size && guest - origin <= size - bytes, "heap mirror readback outside its buffer");
     auto staging = std::make_shared<Buffer>(context, static_cast<std::size_t>(bytes), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
@@ -691,6 +699,13 @@ void ResidentBuffer::flush(bool mayWait) {
             recordTransfer(context, [&](VkCommandBuffer commands, std::vector<std::shared_ptr<void>>& kept) {
                 for (const auto& [offset, bytes] : fills) context.Function<PFN_vkCmdFillBuffer>("vkCmdFillBuffer")(commands, buffer, offset, bytes, 0);
                 if (!regions.empty()) context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(commands, staging->Handle(), buffer, static_cast<std::uint32_t>(regions.size()), regions.data());
+                const auto noteUpload = [&](std::uint64_t offset, std::uint64_t bytes) {
+                    if (bytes == 0) return;
+                    const auto serial = ++uploadCounter;
+                    for (auto index = blockIndex(origin + offset); index <= blockIndex(origin + offset + bytes - 1); ++index) uploads[index] = serial;
+                };
+                for (const auto& [offset, bytes] : fills) noteUpload(offset, bytes);
+                for (const auto& region : regions) noteUpload(region.dstOffset, region.size);
                 if (staging != nullptr) kept.push_back(staging);
                 kept.push_back(shared_from_this());
             });
