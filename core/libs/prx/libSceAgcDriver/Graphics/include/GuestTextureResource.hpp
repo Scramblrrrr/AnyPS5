@@ -3,9 +3,12 @@
 
 #include "Recompiler.hpp"
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
+#include <string>
 
 namespace AgcDriver::Graphics {
 
@@ -151,6 +154,16 @@ std::optional<std::uint64_t> TextureResourceAllocationAddress(std::span<const st
 bool IsNullSampledTextureResource(std::span<const std::uint32_t> words);
 GuestTextureResource DecodeTextureResource(std::span<const std::uint32_t> words);
 std::array<std::uint32_t, 8> R128TextureWords(std::span<const std::uint32_t> words);
+
+struct TextureResourceDecode {
+    GuestTextureResource resource{};
+    std::shared_ptr<const std::string> rejection;
+};
+
+inline constexpr std::size_t RememberedTextureRejections = 4096;
+
+TextureResourceDecode TryDecodeTextureResource(std::span<const std::uint32_t> words);
+std::size_t RememberedTextureRejectionCount();
 std::array<std::uint32_t, 8> EncodeTextureResource(const GuestTextureResource& resource);
 bool DescriptorSingleLevel(std::span<const std::uint32_t> words);
 bool FirstLayerDescriptor(std::span<const std::uint32_t> words, std::array<std::uint32_t, 8>& narrowed);
