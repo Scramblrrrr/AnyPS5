@@ -1548,6 +1548,27 @@ void MemoryAccountingIdleReclaim() {
     if (failures == 0) std::puts("idle device reclaim allocation accounting passed");
 }
 
+void MemoryAccountingForcedBudget(bool sampledFirst, bool enabled) {
+    Expect(MemoryAccounting::Enabled() == enabled, "the forced-budget diagnostic mode is wrong");
+    auto context = budgetContext();
+    context.device = reinterpret_cast<VkDevice>(std::uintptr_t{109});
+    context.physical = reinterpret_cast<VkPhysicalDevice>(std::uintptr_t{109});
+    context.memoryProperties2 = mockDiagnosticMemoryProperties2;
+    diagnosticBudgetQueries = 0;
+    const auto first = sampledFirst ? SampledTextureCacheBudget(context) : StorageTextureCacheBudget(context);
+    Expect(first == 256 * MiB, "diagnostics changed the configured texture budget");
+    Expect(diagnosticBudgetQueries == (enabled ? 1u : 0u), "the forced texture budget did not poll memory only for enabled diagnostics");
+    Expect(StorageTextureCacheBudget(context) == first && SampledTextureCacheBudget(context) == first, "repeated forced-budget queries changed the selected budget");
+    Expect(diagnosticBudgetQueries == (enabled ? 1u : 0u), "repeated forced-budget queries polled device memory again");
+    context.memoryProperties2 = nullptr;
+    Expect(StorageTextureCacheBudget(context) == first && SampledTextureCacheBudget(context) == first, "a missing memory-budget query lost the configured texture budget");
+    context.memoryProperties2 = mockDiagnosticMemoryProperties2;
+    context.physical = VK_NULL_HANDLE;
+    Expect(StorageTextureCacheBudget(context) == first && SampledTextureCacheBudget(context) == first, "a missing physical device lost the configured texture budget");
+    Expect(diagnosticBudgetQueries == (enabled ? 1u : 0u), "an unavailable memory-budget context was queried");
+    if (failures == 0) std::puts("forced texture budget preserved with bounded diagnostic polling");
+}
+
 void MemoryAccountingBudgetCap(bool floor = false) {
     Expect(MemoryAccounting::Enabled(), "memory accounting is not enabled");
     auto context = budgetContext();
@@ -1654,6 +1675,10 @@ int main(int argc, char** argv) {
             MemoryAccountingChecks();
             MemoryAccountingBufferReuse();
             MemoryAccountingIdleReclaim();
+            return failures == 0 ? 0 : 1;
+        }
+        if (argc == 2 && (std::string_view(argv[1]) == "--memory-accounting-forced-storage" || std::string_view(argv[1]) == "--memory-accounting-forced-sampled" || std::string_view(argv[1]) == "--memory-accounting-forced-disabled")) {
+            MemoryAccountingForcedBudget(std::string_view(argv[1]) == "--memory-accounting-forced-sampled", std::string_view(argv[1]) != "--memory-accounting-forced-disabled");
             return failures == 0 ? 0 : 1;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--memory-accounting-budget-cap") {
