@@ -758,8 +758,8 @@ std::uint64_t forcedCacheBudget() {
 std::uint64_t storageBudget(const Context& context, std::uint64_t required = 0, std::optional<std::chrono::steady_clock::time_point>* calculatedAt = nullptr) {
     if (calculatedAt != nullptr) calculatedAt->reset();
     const auto forced = forcedCacheBudget();
-    if (forced != 0) return forced;
-    if (context.memoryProperties2 == nullptr || context.physical == VK_NULL_HANDLE) return TextureCacheBudget(context.memory);
+    if (forced != 0 && !MemoryAccounting::Enabled()) return forced;
+    if (context.memoryProperties2 == nullptr || context.physical == VK_NULL_HANDLE) return forced != 0 ? forced : TextureCacheBudget(context.memory);
     static struct {
         AgcDriver::Mutex mutex;
         VkPhysicalDevice device{VK_NULL_HANDLE};
@@ -791,12 +791,18 @@ std::uint64_t storageBudget(const Context& context, std::uint64_t required = 0, 
         };
         if (cached.device != context.physical || now - cached.read >= std::chrono::seconds(1)) read();
         const auto needed = std::min(required, cached.ceiling);
-        if (needed > cached.budget && context.bufferPool != nullptr && context.bufferPool->ReclaimIdleDevice(needed - cached.budget, now) != 0) read();
+        if (forced == 0 && needed > cached.budget && context.bufferPool != nullptr && context.bufferPool->ReclaimIdleDevice(needed - cached.budget, now) != 0) read();
         budget = cached.budget;
-        if (calculatedAt != nullptr) *calculatedAt = cached.calculatedAt;
+        if (calculatedAt != nullptr && forced == 0) *calculatedAt = cached.calculatedAt;
     }
-    if (reported) MemoryAccounting::Report(context, *reported, snapshot);
-    return budget;
+    if (reported) {
+        if (forced != 0) {
+            snapshot.ceiling = forced;
+            snapshot.selectedBudget = forced;
+        }
+        MemoryAccounting::Report(context, *reported, snapshot);
+    }
+    return forced != 0 ? forced : budget;
 }
 
 std::size_t storageEntries() {
@@ -810,7 +816,10 @@ std::size_t storageEntries() {
 }
 
 std::uint64_t sampledBudget(const Context& context, TextureCache& cache) {
-    if (const auto forced = forcedCacheBudget(); forced != 0) return forced;
+    if (const auto forced = forcedCacheBudget(); forced != 0) {
+        if (MemoryAccounting::Enabled()) storageBudget(context);
+        return forced;
+    }
     if (context.memoryProperties2 == nullptr || context.physical == VK_NULL_HANDLE) return TextureCacheBudget(context.memory);
     const auto now = std::chrono::steady_clock::now();
     if (cache.budgetDevice == context.physical && now - cache.budgetRead < std::chrono::seconds(1)) return cache.budget;
