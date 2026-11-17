@@ -878,7 +878,7 @@ void interiorStraddlingImportTests(const Context& context) {
         const auto bind = [&](std::uint64_t begin, std::size_t bytes) {
             GuestBufferMemory memory(importing);
             if (acquired) memory.AcquireRegistered();
-            memory.AddReadable(begin, bytes);
+            memory.AddWritable(begin, bytes);
             memory.Upload(false);
             std::uint32_t adjustment = 0;
             const auto view = memory.Descriptor(begin, bytes, adjustment);
@@ -908,8 +908,8 @@ void interiorStraddlingImportTests(const Context& context) {
             {
                 GuestBufferMemory memory(importing);
                 if (acquired) memory.AcquireRegistered();
-                memory.AddReadable(begin, bytes);
-                memory.AddReadable(other, bytes);
+                memory.AddWritable(begin, bytes);
+                memory.AddWritable(other, bytes);
                 memory.Upload(false);
                 for (const auto address : {begin, other}) {
                     std::uint32_t adjustment = 0;
