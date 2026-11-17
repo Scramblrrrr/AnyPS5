@@ -725,10 +725,11 @@ struct PageSpan {
         while (index < end) {
             const auto next = std::min(end, (index / ChunkEntries + 1) * ChunkEntries);
             if (auto* at = entry(index, value != 0 && value != PageInaccessible)) {
+                const auto written = index;
                 for (; index < next; ++index, ++at) storeByte(at, value);
+                settle(written, next);
             } else index = next;
         }
-        settle(begin, end);
     }
 
     // End of the run of pages equal to `value` that starts at `address`, at most `limit`.
