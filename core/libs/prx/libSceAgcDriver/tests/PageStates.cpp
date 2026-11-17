@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -78,6 +79,35 @@ void CheckMetadata() {
     const auto queried = PrivateBytes();
     Require(!Accessible(range.Data() + 2 * ChunkGuestBytes, Unit), "reserved fixture tail is accessible");
     Require(PrivateBytes() < queried + (4ull << 20u), "querying reserved pages allocated untouched metadata chunks");
+}
+
+
+void CheckSparseQueries() {
+    constexpr auto bytes = 64 * ChunkGuestBytes;
+    Range range(bytes);
+    auto* first = range.Commit(0);
+    auto* last = range.Commit(bytes - Unit);
+    const auto base = reinterpret_cast<std::uint64_t>(range.Data());
+    using Ranges = std::vector<std::pair<std::uint64_t, std::uint64_t>>;
+    const Ranges ends{{base, base + Unit}, {base + bytes - Unit, base + bytes}};
+    Require(CommittedRanges(base, bytes, true) == ends, "a sparse page-state query lost a committed end or included a hole");
+    const auto before = PrivateBytes();
+    const auto start = std::chrono::steady_clock::now();
+    for (std::size_t index = 1; index <= 64; ++index) {
+        const auto hole = base + index % 62 * ChunkGuestBytes + ChunkGuestBytes / 2;
+        Require(!DescribeCommitted(hole, Unit, true).whole && CommittedRanges(hole, Unit).empty(), "an untouched sparse metadata chunk was accessible");
+    }
+    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::printf("sparse page-state queries: 128 checks in %.3f ms\n", elapsed);
+    Require(PrivateBytes() < before + (4ull << 20u), "sparse hole queries allocated untouched metadata chunks");
+    auto* middle = range.Commit(bytes / 2);
+    Require(Accessible(middle, Unit, true), "a chunk committed after sparse hole queries retained inaccessible state");
+    const Ranges three{{base, base + Unit}, {base + bytes / 2, base + bytes / 2 + Unit}, {base + bytes - Unit, base + bytes}};
+    Require(CommittedRanges(base, bytes, true) == three, "a newly allocated metadata chunk was skipped");
+    GuestArena::GuestArenaReset_nid_postfix(middle, Unit);
+    GuestAllocations::GuestAllocationsInvalidate_nid_postfix(base + bytes / 2, Unit);
+    Require(CommittedRanges(base, bytes, true) == ends, "a decommitted sparse metadata chunk retained readable pages");
+    Require(Accessible(first, Unit, true) && Accessible(last, Unit, true), "queries across missing metadata chunks changed committed ends");
 }
 
 void CheckBoundaries() {
@@ -240,6 +270,7 @@ int main(int argc, char** argv) {
         Require(GuestArena::GuestArenaAvailable_nid_postfix(), "page-state fixture needs the guest arena");
         if (argc == 2 && std::string_view(argv[1]) == "--metadata") CheckMetadata();
         else if (argc == 2 && std::string_view(argv[1]) == "--runs") CheckRuns();
+        else if (argc == 2 && std::string_view(argv[1]) == "--sparse-queries") CheckSparseQueries();
         else CheckBoundaries();
         return 0;
     } catch (const std::exception& error) {
