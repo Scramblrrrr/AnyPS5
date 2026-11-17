@@ -28,8 +28,18 @@ if(BUILD_TESTING)
     set_tests_properties(agc_memory_accounting_budget_snapshot PROPERTIES ENVIRONMENT "APS5_TRACE_MEMORY_BUDGET=1"
         PASS_REGULAR_EXPRESSION "storage heap=2 sampled_live=1073741824 storage_cached=2147483648 reserved=8321499136 available=2415919104 cap=5368709120 selected=2415919104"
         FAIL_REGULAR_EXPRESSION "FAIL:" TIMEOUT 30)
+    add_test(NAME agc_memory_accounting_forced_storage COMMAND agc_buffer_pool_tests --memory-accounting-forced-storage)
+    add_test(NAME agc_memory_accounting_forced_sampled COMMAND agc_buffer_pool_tests --memory-accounting-forced-sampled)
+    set_tests_properties(agc_memory_accounting_forced_storage agc_memory_accounting_forced_sampled PROPERTIES
+        ENVIRONMENT "APS5_TRACE_MEMORY_BUDGET=1;APS5_TEXTURE_CACHE_MIB=256"
+        PASS_REGULAR_EXPRESSION "cap=268435456 selected=268435456" FAIL_REGULAR_EXPRESSION "FAIL:" TIMEOUT 30)
+    add_test(NAME agc_memory_accounting_forced_disabled COMMAND agc_buffer_pool_tests --memory-accounting-forced-disabled)
+    set_tests_properties(agc_memory_accounting_forced_disabled PROPERTIES
+        ENVIRONMENT "APS5_TEXTURE_CACHE_MIB=256" ENVIRONMENT_MODIFICATION "APS5_TRACE_MEMORY_BUDGET=unset:"
+        PASS_REGULAR_EXPRESSION "forced texture budget preserved with bounded diagnostic polling"
+        FAIL_REGULAR_EXPRESSION "FAIL:|gpu-memory" TIMEOUT 30)
     if(WIN32)
-        set_tests_properties(agc_memory_accounting agc_memory_accounting_budget_cap agc_memory_accounting_budget_floor agc_memory_accounting_budget_snapshot agc_buffer_pool agc_buffer_pool_small_device_shared agc_buffer_pool_small_device_no_staging PROPERTIES ENVIRONMENT_MODIFICATION
+        set_property(TEST agc_memory_accounting agc_memory_accounting_budget_cap agc_memory_accounting_budget_floor agc_memory_accounting_budget_snapshot agc_memory_accounting_forced_storage agc_memory_accounting_forced_sampled agc_memory_accounting_forced_disabled agc_buffer_pool agc_buffer_pool_small_device_shared agc_buffer_pool_small_device_no_staging APPEND PROPERTY ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 endif()
