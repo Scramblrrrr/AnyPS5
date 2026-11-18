@@ -5265,7 +5265,7 @@ void hostWriteWatchExclusionTests() {
 #endif
 }
 
-void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& access) {
+void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& access, bool late = false) {
     constexpr std::size_t half = 1u << 20u;
     constexpr std::size_t reserved = 3 * half;
     constexpr std::size_t page = 65536;
@@ -5300,7 +5300,7 @@ void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& ac
     const auto registry = [&](bool add) {
         auto* mutation = GuestAllocations::GuestAllocationsBegin_nid_postfix();
         if (add) {
-            GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, guest, half, true, true, true);
+            if (!late) GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, guest, half, true, true, true);
             GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, second, half, true, true, true);
             GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, third, half, true, true, true);
         } else {
@@ -5335,16 +5335,29 @@ void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& ac
         return view;
     };
     const auto before = MirrorCounters();
-    const auto first = bind();
+    const auto first = bind(late ? 1 : 0);
     const auto made = MirrorCounters();
     Require(made.sparseBinds == before.sparseBinds + 1 && made.heapMirrors == before.heapMirrors + 1, "a sparse heap whose committed span crosses an adjacent range was not mirrored");
-    Require(second[8] == 0x77, "a store to the adjacent range of a mirrored sparse heap was not written back");
-    second[8] = 0x6b;
-    const auto overlapping = bind(1);
-    Require(overlapping.buffer == first.buffer && overlapping.offset == first.offset + half && MirrorCounters().heapMirrors == made.heapMirrors && MirrorCounters().rebuilds == made.rebuilds, "overlapping sparse heap views created different joined mirrors");
-    Require(third[8] == 0x77, "a store through the overlapping joined mirror did not reach its range");
+    auto* initiallyWritten = late ? third : second;
+    Require(initiallyWritten[8] == 0x77, "a store to the adjacent range of a mirrored sparse heap was not written back");
+    initiallyWritten[8] = late ? 0x3c : 0x6b;
+    if (late) {
+        GuestAllocations::Mutation mutation;
+        mutation.Add(guest, half, true, true, true);
+    }
+    const auto overlapping = bind(late ? 0 : 1);
+    if (late) {
+        Require(MirrorCounters().heapMirrors == made.heapMirrors, "a longer joined heap run retained its superseded mirror");
+        Require(MirrorCounters().rebuilds == made.rebuilds + 1, "the longer joined heap run did not create its new mirror");
+        Require(second[8] == 0x77, "a store through the longer joined mirror did not reach its range");
+    } else {
+        Require(overlapping.buffer == first.buffer && overlapping.offset == first.offset + half && MirrorCounters().heapMirrors == made.heapMirrors && MirrorCounters().rebuilds == made.rebuilds, "overlapping sparse heap views created different joined mirrors");
+        Require(third[8] == 0x77, "a store through the overlapping joined mirror did not reach its range");
+    }
+    const auto expected = late ? overlapping : first;
+    const auto refreshed = MirrorCounters();
     const auto again = bind();
-    Require(again.buffer == first.buffer && MirrorCounters().rebuilds == made.rebuilds && MirrorCounters().sparseBinds == made.sparseBinds + 2, "a sparse heap over unchanged adjacent ranges did not reuse its mirror");
+    Require(again.buffer == expected.buffer && MirrorCounters().rebuilds == refreshed.rebuilds && MirrorCounters().sparseBinds == made.sparseBinds + 2, "a sparse heap over unchanged adjacent ranges did not reuse its mirror");
     registry(false);
     sweep();
     Require(MirrorCounters().heapMirrors == before.heapMirrors && MirrorCounters().heapBytes == before.heapBytes, "the sparse heap mirror over adjacent ranges outlived its ranges");
@@ -5355,7 +5368,7 @@ void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& ac
     GuestWriteWatch::GuestWriteWatchUnregister_nid_postfix(guest, reserved);
     munmap(mapping, reserved + page);
 #endif
-    std::cout << "overlapping sparse heap views share one joined mirror and release it\n";
+    std::cout << (late ? "a longer joined heap run releases its superseded mirror and preserves its data\n" : "overlapping sparse heap views share one joined mirror and release it\n");
 }
 
 void joinedHeapMirrorPartialImportTests(const Context& context, const BdaTestAccess& access) {
@@ -5923,6 +5936,7 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     hostWriteWatchExclusionTests();
     sparseHeapMirrorTests(context, access);
     sparseJoinedHeapMirrorTests(context, access);
+    sparseJoinedHeapMirrorTests(context, access, true);
     joinedHeapMirrorPartialImportTests(context, access);
     Require(AddressCopyOverflow({{0x1000, 0x3000, 0x2000, "uncommitted pages"}}, 0x2000).empty(), "copies within the limit were refused");
     const auto copies = AddressCopyOverflow({{0x1000, 0x2000, 0x1000, "not mirrored"}, {0x10000, 0x30000, 0x18000, "uncommitted pages"}}, 0x2000);
