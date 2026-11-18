@@ -3418,8 +3418,12 @@ void importedHeapMirrorTests(const Context& context, const BdaTestAccess& access
 }
 
 void heapMirrorRetryTests(const Context& context) {
-#ifndef _WIN32
-    if (!GuestWriteWatch::GuestWriteWatchAvailable_nid_postfix() || !AddressSpaceCounters().enabled) {
+#ifdef _WIN32
+    const bool watched = GuestArena::GuestArenaAvailable_nid_postfix() && GuestArena::GuestArenaWriteWatched_nid_postfix();
+#else
+    const bool watched = GuestWriteWatch::GuestWriteWatchAvailable_nid_postfix();
+#endif
+    if (!watched || !AddressSpaceCounters().enabled) {
         std::cout << "write watch unavailable or the address space cache is off: heap mirror retries not tested\n";
         return;
     }
@@ -3430,14 +3434,22 @@ void heapMirrorRetryTests(const Context& context) {
     const auto fixture = [&](bool recorded, bool retaken) {
         const std::string name = recorded ? " (recorded work active)" : retaken ? " (reused address space)" : "";
         ClearHostImports(context.device);
+#ifdef _WIN32
+        void* area = GuestArena::GuestArenaAllocate_nid_postfix(4 * bytes, bytes);
+        Require(area != nullptr, "cannot allocate the heap mirror retry blocks");
+        GuestArena::GuestArenaCommit_nid_postfix(area, 4 * bytes, PAGE_READWRITE, 4 * bytes);
+#else
         void* area = mmap(nullptr, 4 * bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         Require(area != MAP_FAILED, "cannot map the heap mirror retry blocks");
+#endif
         const auto heapAt = (reinterpret_cast<std::uintptr_t>(area) + bytes - 1) & ~(bytes - 1);
         const auto idleAt = heapAt + 2 * bytes;
         auto* heap = reinterpret_cast<std::uint8_t*>(heapAt);
         std::memset(heap, 0x11, bytes);
         std::memset(reinterpret_cast<void*>(idleAt), 0x22, bytes);
+#ifndef _WIN32
         GuestWriteWatch::GuestWriteWatchRegister_nid_postfix(heap, bytes);
+#endif
         const auto registry = [&](std::uintptr_t at, bool add, bool gpu) {
             auto* mutation = GuestAllocations::GuestAllocationsBegin_nid_postfix();
             if (add) GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, reinterpret_cast<void*>(at), bytes, true, false, gpu);
@@ -3530,15 +3542,17 @@ void heapMirrorRetryTests(const Context& context) {
         registry(heapAt, false, true);
         registry(idleAt, false, false);
         ClearHostImports(context.device);
+#ifdef _WIN32
+        GuestArena::GuestArenaRelease_nid_postfix(area, 4 * bytes);
+#else
         GuestWriteWatch::GuestWriteWatchUnregister_nid_postfix(heap, bytes);
         munmap(area, 4 * bytes);
+#endif
     };
     fixture(false, false);
     fixture(true, false);
     fixture(false, true);
-#else
-    static_cast<void>(context);
-#endif
+    std::cout << "heap mirror retries: immediate, recorded and cached-reuse checks completed\n";
 }
 
 void retiredImportWatchTests(const Context& context) {
