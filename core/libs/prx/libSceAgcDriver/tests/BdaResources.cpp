@@ -3645,6 +3645,7 @@ void heapMirrorRetryTests(const Context& context) {
         registry(idleAt, false, false);
         ClearHostImports(context.device);
 #ifdef _WIN32
+        GuestArena::GuestArenaReset_nid_postfix(area, 4 * bytes);
         GuestArena::GuestArenaRelease_nid_postfix(area, 4 * bytes);
 #else
         GuestWriteWatch::GuestWriteWatchUnregister_nid_postfix(heap, bytes);
