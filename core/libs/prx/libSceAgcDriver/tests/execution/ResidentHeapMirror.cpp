@@ -32,6 +32,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace AgcDriver {
@@ -113,13 +114,15 @@ private:
 
 class GuestHeap {
 public:
-    explicit GuestHeap(bool writable, std::uint64_t ranges = 1, std::uint64_t rangeBytes = HeapBytes, void* at = nullptr) : ranges(ranges), rangeBytes(rangeBytes) {
+    explicit GuestHeap(bool writable, std::uint64_t ranges = 1, std::uint64_t rangeBytes = HeapBytes, void* at = nullptr, std::uint64_t committedBytes = 0) : ranges(ranges), rangeBytes(rangeBytes) {
         const auto bytes = rangeBytes * ranges;
+        watchedBytes = committedBytes == 0 ? bytes : committedBytes;
+        Require(watchedBytes <= bytes && watchedBytes % Block == 0, "resident heap mirror: invalid committed heap extent");
 #ifdef _WIN32
         raw = at == nullptr ? GuestArena::GuestArenaAllocate_nid_postfix(bytes, Block)
                             : GuestArena::GuestArenaAllocateAtOrAbove_nid_postfix(reinterpret_cast<std::uintptr_t>(at), bytes, Block);
         Require(raw != nullptr && (at == nullptr || raw == at), "resident heap mirror: cannot allocate the guest heap");
-        GuestArena::GuestArenaCommit_nid_postfix(raw, bytes, PAGE_READWRITE, bytes);
+        GuestArena::GuestArenaCommit_nid_postfix(raw, watchedBytes, PAGE_READWRITE, watchedBytes);
         base = static_cast<std::uint8_t*>(raw);
 #else
 #ifdef __APPLE__
@@ -132,7 +135,10 @@ public:
         Require(raw != MAP_FAILED && (at == nullptr || raw == at), "resident heap mirror: cannot map the guest heap");
         base = reinterpret_cast<std::uint8_t*>((reinterpret_cast<std::uintptr_t>(raw) + Block - 1) / Block * Block);
 #endif
-        GuestWriteWatch::GuestWriteWatchRegister_nid_postfix(base, bytes);
+#ifndef _WIN32
+        if (watchedBytes < bytes) Require(mprotect(base + watchedBytes, bytes - watchedBytes, PROT_NONE) == 0, "resident heap mirror: cannot leave the heap tail uncommitted");
+#endif
+        GuestWriteWatch::GuestWriteWatchRegister_nid_postfix(base, watchedBytes);
         GuestAllocations::Mutation mutation;
         for (std::uint64_t range = 0; range < ranges; ++range) mutation.Add(base + range * rangeBytes, rangeBytes, true, writable, true);
     }
@@ -142,7 +148,7 @@ public:
             GuestAllocations::Mutation mutation;
             for (std::uint64_t range = 0; range < ranges; ++range) mutation.Remove(base + range * rangeBytes);
         }
-        GuestWriteWatch::GuestWriteWatchUnregister_nid_postfix(base, rangeBytes * ranges);
+        GuestWriteWatch::GuestWriteWatchUnregister_nid_postfix(base, watchedBytes);
 #ifdef _WIN32
         GuestArena::GuestArenaReset_nid_postfix(raw, rangeBytes * ranges);
         GuestArena::GuestArenaRelease_nid_postfix(raw, rangeBytes * ranges);
@@ -177,6 +183,7 @@ public:
 private:
     std::uint64_t ranges = 1;
     std::uint64_t rangeBytes = HeapBytes;
+    std::uint64_t watchedBytes = 0;
     void* raw = nullptr;
     std::uint8_t* base = nullptr;
 };
@@ -348,6 +355,58 @@ std::uint32_t ReadGuest(const GuestHeap& heap, std::uint64_t offset) {
     std::uint32_t texel = 0;
     AgcDriver::GuestMemory::Read(heap.Address() + offset, std::as_writable_bytes(std::span(&texel, 1)));
     return texel;
+}
+
+void SparseDescriptorPublishTests(AgcDriver::VulkanDevice& device) {
+    using AgcDriver::Graphics::MirrorCounters;
+    using AgcDriver::Graphics::StorageTexture;
+    constexpr std::uint64_t Committed = 2u << 20u;
+    const auto copy = [&](const GuestHeap& heap, const OutputBlock& output) {
+        std::fill(output.Data(), output.Data() + Threads, 0xdeadbeefu);
+        std::vector<std::uint32_t> userData(8, 0u);
+        const auto in = BufferDescriptor(heap.Address(), static_cast<std::uint32_t>(HeapBytes));
+        const auto out = BufferDescriptor(reinterpret_cast<std::uintptr_t>(output.Data()), static_cast<std::uint32_t>(Threads * sizeof(std::uint32_t)));
+        std::copy(in.begin(), in.end(), userData.begin());
+        std::copy(out.begin(), out.end(), userData.begin() + 4);
+        Run(device, CopyCode, userData);
+    };
+    {
+        GuestHeap heap(true, 1, HeapBytes, nullptr, Committed);
+        std::memset(heap.Data(), 0, Committed);
+        const OutputBlock output;
+        const ImportBudget budget(AgcDriver::Graphics::HostImportLiveBytes() + Block);
+        const auto first = MirrorCounters();
+        copy(heap, output);
+        Require(output.Data()[0] == 0u, "sparse descriptor publish: the initial GPU read did not return zero");
+        Require(MirrorCounters().sparseBinds > first.sparseBinds, "sparse descriptor publish: the descriptor did not take the sparse heap binding path");
+        StoreImage(device, heap.Address());
+        const auto before = StorageTexture::MirrorPublishTotals();
+        const auto bound = MirrorCounters().sparseBinds;
+        copy(heap, output);
+        Require(MirrorCounters().sparseBinds > bound, "sparse descriptor publish: the image consumer did not bind the sparse mirror");
+        Require(output.Data()[0] == Stored, "sparse descriptor publish: the GPU descriptor read stale image data " + Hex(output.Data()[0]));
+        Require(StorageTexture::MirrorPublishTotals().published > before.published && heap.Load(0) == 0u, "sparse descriptor publish: the sparse descriptor refresh stored the image to guest memory instead of publishing it into the heap mirror");
+        Require(StorageTexture::AnyPending(), "sparse descriptor publish: publication consumed the pending storage results");
+        const auto published = StorageTexture::MirrorPublishTotals();
+        copy(heap, output);
+        const auto again = StorageTexture::MirrorPublishTotals();
+        Require(output.Data()[0] == Stored, "sparse descriptor publish: the reused sparse descriptor read stale image data");
+        Require(again.published == published.published && again.skipped > published.skipped, "sparse descriptor publish: an unchanged sparse descriptor published the image again");
+        Require(ReadGuest(heap, 0) == Stored, "sparse descriptor publish: a CPU read did not receive the pending image");
+    }
+    {
+        GuestHeap heap(true, 1, HeapBytes, nullptr, Committed);
+        std::memset(heap.Data(), 0, Committed);
+        const OutputBlock output;
+        const ImportBudget budget(AgcDriver::Graphics::HostImportLiveBytes() + Block);
+        copy(heap, output);
+        StoreImage(device, heap.Address());
+        heap.Store(0, CpuWord);
+        copy(heap, output);
+        Require(output.Data()[0] == CpuWord, "sparse descriptor publish: the pending image rolled back a CPU store in the descriptor read");
+        Require(ReadGuest(heap, 0) == CpuWord, "sparse descriptor publish: the pending image rolled back the CPU's guest word");
+    }
+    std::puts("sparse descriptor publication: GPU data, reuse, pending CPU read and CPU-write precedence passed");
 }
 
 void StorageImageTests(AgcDriver::VulkanDevice& device, bool published, bool copied) {
@@ -840,8 +899,10 @@ void ReusedBuildPublishTests(AgcDriver::VulkanDevice& device) {
     Require(close(third, colour(1.0f)), name + "a reused build (build 2: it takes the cached address space and writes new texels) read colour " + std::to_string(third) + " from the heap mirror, expected " + std::to_string(colour(1.0f)) + "; the previous build's colour is " + std::to_string(colour(0.25f)));
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        const bool sparsePublishOnly = argc == 2 && std::string_view(argv[1]) == "--sparse-publish-only";
+        if (argc != 1 && !sparsePublishOnly) throw std::runtime_error("resident heap mirror: unknown test argument");
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
 #ifdef _WIN32
@@ -855,9 +916,13 @@ int main() {
         }
         const auto context = AgcDriver::VulkanDeviceTestAccess::ContextOf(*device);
         const bool sparse = context.sparseBinding && context.sparseResidencyBuffer && context.sparseResidencyAliased;
-        if (!sparse && std::getenv("ANYPS5_TEST_EXPECT_MIRROR_PUBLISH") != nullptr) {
-            std::puts("skipped, the device has no sparse residency: the publish negative control needs resident heap mirrors");
+        if (!sparse && (sparsePublishOnly || std::getenv("ANYPS5_TEST_EXPECT_MIRROR_PUBLISH") != nullptr)) {
+            std::puts("skipped, the device has no sparse residency: mirror publication needs resident heap mirrors");
             return VulkanTestSkipped;
+        }
+        if (sparsePublishOnly) {
+            SparseDescriptorPublishTests(*device);
+            return 0;
         }
         if (sparse) {
             ResidentTests(*device);
