@@ -37,6 +37,7 @@ struct State {
     std::wstring output;
     std::atomic<std::uint64_t> nextSnapshot{0};
     std::atomic<std::uint64_t> dropped{0};
+    std::array<std::atomic<std::uint64_t>, 16> walkCounts{};
     unsigned sequence = 0;
     bool (*attach)(mi_profiler_t*) = nullptr;
     bool (*start)(mi_profiler_t*) = nullptr;
@@ -49,6 +50,7 @@ std::once_flag initialized;
 thread_local bool callbackActive = false;
 
 unsigned Capture(std::array<std::uint64_t, Depth>& frames) {
+    state->walkCounts[0].fetch_add(1);
     CONTEXT context{};
     RtlCaptureContext(&context);
     MEMORY_BASIC_INFORMATION stack{};
@@ -58,23 +60,42 @@ unsigned Capture(std::array<std::uint64_t, Depth>& frames) {
     const auto high = low + stack.RegionSize;
     unsigned count = 0;
     for (unsigned depth = 0; depth < 32 && context.Rip != 0 && count < frames.size(); ++depth) {
-        if (context.Rsp < low || context.Rsp >= high) break;
+        if (context.Rsp < low || context.Rsp >= high) { state->walkCounts[1].fetch_add(1); break; }
         if (state->module->Contains(context.Rip)) frames[count++] = context.Rip - state->module->Base();
         DWORD64 imageBase = 0;
         if (auto* entry = RtlLookupFunctionEntry(context.Rip, &imageBase, nullptr)) {
+            state->walkCounts[2].fetch_add(1);
+            if (state->module->Contains(context.Rip)) state->walkCounts[3].fetch_add(1);
             PVOID handler = nullptr;
             DWORD64 establisher = 0;
             RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.Rip, entry, &context, &handler, &establisher, nullptr);
+            if (context.Rip == 0) state->walkCounts[4].fetch_add(1);
             continue;
         }
-        if (!state->module->Contains(context.Rip - (depth == 0 ? 0 : 1))) break;
+        if (!state->module->Contains(context.Rip - (depth == 0 ? 0 : 1))) {
+            state->walkCounts[5].fetch_add(1);
+            HMODULE stopped = nullptr;
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(context.Rip), &stopped);
+            if (stopped == GetModuleHandleW(L"mimalloc.dll")) state->walkCounts[6].fetch_add(1);
+            if (stopped == GetModuleHandleW(L"libc.prx")) state->walkCounts[7].fetch_add(1);
+            break;
+        }
         AgcDriver::DwarfFrames::Registers registers{context.Rax, context.Rdx, context.Rcx, context.Rbx, context.Rsi, context.Rdi, context.Rbp, context.Rsp, context.R8, context.R9, context.R10, context.R11, context.R12, context.R13, context.R14, context.R15, context.Rip};
         const auto step = state->module->Unwind(registers, depth == 0, [&](std::uint64_t address, std::uint64_t& value) {
-            if (address < low || address > high - sizeof(value)) return false;
+            if (address < low || address > high - sizeof(value)) {
+                state->walkCounts[8].fetch_add(1);
+                const auto* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+                if (address >= reinterpret_cast<std::uint64_t>(tib->StackLimit) && address <= reinterpret_cast<std::uint64_t>(tib->StackBase) - sizeof(value)) state->walkCounts[9].fetch_add(1);
+                return false;
+            }
             std::memcpy(&value, reinterpret_cast<void*>(address), sizeof(value));
             return true;
         });
-        if (step != AgcDriver::DwarfFrames::Step::Stepped) break;
+        if (step != AgcDriver::DwarfFrames::Step::Stepped) {
+            state->walkCounts[step == AgcDriver::DwarfFrames::Step::NoRecord ? 10 : 11].fetch_add(1);
+            break;
+        }
+        state->walkCounts[12].fetch_add(1);
         DWORD64* columns[]{&context.Rax, &context.Rdx, &context.Rcx, &context.Rbx, &context.Rsi, &context.Rdi, &context.Rbp, &context.Rsp, &context.R8, &context.R9, &context.R10, &context.R11, &context.R12, &context.R13, &context.R14, &context.R15, &context.Rip};
         for (std::size_t column = 0; column < registers.size(); ++column) *columns[column] = registers[column];
     }
@@ -91,7 +112,9 @@ void Snapshot(mi_profiler_t*) {
     const auto temporary = destination + L".tmp";
     auto* file = _wfopen(temporary.c_str(), L"w");
     if (file == nullptr) return;
-    std::fprintf(file, "schema=1 sample_rate=%llu tick=%llu dropped=%llu raw_sampled_counts=1 own_driver_frames_only=1\n", static_cast<unsigned long long>(SampleRate), static_cast<unsigned long long>(GetTickCount64()), static_cast<unsigned long long>(state->dropped.load()));
+    std::fprintf(file, "schema=1 sample_rate=%llu tick=%llu dropped=%llu raw_sampled_counts=1 own_driver_frames_only=1", static_cast<unsigned long long>(SampleRate), static_cast<unsigned long long>(GetTickCount64()), static_cast<unsigned long long>(state->dropped.load()));
+    for (unsigned index = 0; index < state->walkCounts.size(); ++index) std::fprintf(file, " s%u=%llu", index, static_cast<unsigned long long>(state->walkCounts[index].load()));
+    std::fputc('\n', file);
     std::fputs("live_bytes\tlive_objects\ttotal_bytes\ttotal_objects\tframes\n", file);
     AcquireSRWLockShared(&state->lock);
     for (const auto& entry : state->entries) {
