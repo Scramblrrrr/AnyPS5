@@ -3418,14 +3418,25 @@ void importedHeapMirrorTests(const Context& context, const BdaTestAccess& access
 }
 
 void importRetireCreditTests(const Context& context) {
-#ifndef _WIN32
+#ifdef _WIN32
+    if (!GuestArena::GuestArenaAvailable_nid_postfix()) {
+        std::cout << "guest arena unavailable: import retire credits not tested\n";
+        return;
+    }
+#endif
     constexpr std::size_t bytes = 1u << 20u;
     constexpr std::size_t idle = 4;
     auto importing = context;
     importing.hostImportAlignment = bytes;
     ClearHostImports(context.device);
+#ifdef _WIN32
+    void* area = GuestArena::GuestArenaAllocate_nid_postfix(2 * (idle + 3) * bytes, bytes);
+    Require(area != nullptr, "cannot allocate the import retire credit blocks");
+    GuestArena::GuestArenaCommit_nid_postfix(area, 2 * (idle + 3) * bytes, PAGE_READWRITE, 2 * (idle + 3) * bytes);
+#else
     void* area = mmap(nullptr, 2 * (idle + 3) * bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     Require(area != MAP_FAILED, "cannot map the import retire credit blocks");
+#endif
     const auto first = (reinterpret_cast<std::uintptr_t>(area) + bytes - 1) & ~(bytes - 1);
     std::memset(reinterpret_cast<void*>(first), 0x44, 2 * (idle + 2) * bytes);
     const auto registry = [&](std::uintptr_t at, bool add) {
@@ -3468,10 +3479,13 @@ void importRetireCreditTests(const Context& context) {
     SetHostImportBudget(0);
     for (std::size_t index = 0; index < idle + 2; ++index) registry(first + 2 * index * bytes, false);
     ClearHostImports(context.device);
-    munmap(area, 2 * (idle + 3) * bytes);
+#ifdef _WIN32
+    GuestArena::GuestArenaReset_nid_postfix(area, 2 * (idle + 3) * bytes);
+    GuestArena::GuestArenaRelease_nid_postfix(area, 2 * (idle + 3) * bytes);
 #else
-    static_cast<void>(context);
+    munmap(area, 2 * (idle + 3) * bytes);
 #endif
+    std::cout << "import retire credits: recorded work, quarter-budget limit and released bytes checked\n";
 }
 
 void heapMirrorRetryTests(const Context& context) {
