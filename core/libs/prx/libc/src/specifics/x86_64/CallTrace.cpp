@@ -91,6 +91,25 @@ bool Selected(std::string_view library) {
     return false;
 }
 
+bool Excluded(std::string_view library, std::string_view name) {
+    const char* value = std::getenv("APS5_TRACE_CALLS_EXCLUDE");
+    if (value == nullptr || *value == '\0' || name.empty()) return false;
+    if (library.ends_with(".prx")) library.remove_suffix(4);
+    std::string_view rest(value);
+    while (!rest.empty()) {
+        const auto comma = rest.find(',');
+        const auto token = rest.substr(0, comma);
+        rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+        if (token == name) return true;
+        const auto colon = token.find(':');
+        if (colon == std::string_view::npos || colon == 0 || colon + 1 == token.size()) continue;
+        auto scope = token.substr(0, colon);
+        if (scope.ends_with(".prx")) scope.remove_suffix(4);
+        if (scope == library && token.substr(colon + 1) == name) return true;
+    }
+    return false;
+}
+
 std::string DefiningLibrary(const void* target) {
 #ifdef _WIN32
     MEMORY_BASIC_INFORMATION memory{};
@@ -456,7 +475,7 @@ void* TraceImport_nid_no_patch(void* target, const char* name, const char* libra
         definingLibrary = DefiningLibrary(target);
         library = definingLibrary.c_str();
     }
-    if (!Selected(library)) return target;
+    if (!Selected(library) || Excluded(library, name)) return target;
     std::lock_guard lock(g_mutex);
     if (g_ring.load(std::memory_order_relaxed) == nullptr) {
         MapThunkArea();

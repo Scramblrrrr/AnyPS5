@@ -99,8 +99,67 @@ static TFunction* Traced(TFunction* function, const char* name, const char* libr
     return reinterpret_cast<TFunction*>(TraceImport_nid_no_patch(reinterpret_cast<void*>(function), name, library));
 }
 
-int main(int argc, char** argv) {
+static void SetExclusions(const std::string& value) {
 #ifdef _WIN32
+    Require(_putenv_s("APS5_TRACE_CALLS_EXCLUDE", value.c_str()) == 0);
+#else
+    Require(setenv("APS5_TRACE_CALLS_EXCLUDE", value.c_str(), 1) == 0);
+#endif
+}
+
+static void ExclusionTests(const std::string& executable) {
+#ifdef _WIN32
+    Require(_putenv_s("APS5_TRACE_CALLS", "all") == 0);
+#else
+    Require(setenv("APS5_TRACE_CALLS", "all", 1) == 0);
+#endif
+    struct Case {
+        const char* excluded;
+        const char* name;
+        const char* library;
+        bool bypass;
+    };
+    const Case cases[] = {
+        {"Integers", "Integers", "libOther.prx", true},
+        {"Integers", "Alias", "libTraced.prx", false},
+        {"libTraced.prx:Integers", "Integers", "libTraced", true},
+        {"libTraced:Integers", "Integers", "libTraced.prx", true},
+        {"libTraced:Integers", "Integers", "libOther.prx", false},
+        {"Integer", "Integers", "libTraced.prx", false},
+        {",Other,libOther.prx:Alias,", "Alias", "libOther", true},
+        {"", "Integers", "libTraced.prx", false},
+        {"libTraced:,:Integers,,", "Integers", "libTraced.prx", false},
+        {"symbol::name", "symbol::name", "libTraced", true},
+        {"libTraced:symbol::name", "symbol::name", "libTraced.prx", true}
+    };
+    for (const auto& test : cases) {
+        SetExclusions(test.excluded);
+        std::uint64_t before = 0;
+        CopyCallCounts_nid_no_patch(nullptr, 0, &before);
+        const auto function = Traced(&Integers, test.name, test.library);
+        Require((function == &Integers) == test.bypass);
+        Require(function(1, 2, 3, 4, 5, 6, 7, 8) == 204);
+        std::uint64_t after = 0;
+        CopyCallCounts_nid_no_patch(nullptr, 0, &after);
+        Require(after == before + (test.bypass ? 0 : 1));
+    }
+    SetExclusions(executable + ":Unlabeled");
+    std::uint64_t before = 0;
+    CopyCallCounts_nid_no_patch(nullptr, 0, &before);
+    const auto inferred = Traced(&Unlabeled, "Unlabeled", "");
+    Require(inferred == &Unlabeled && inferred(39) == 42);
+    std::uint64_t after = 0;
+    CopyCallCounts_nid_no_patch(nullptr, 0, &after);
+    Require(after == before);
+    SetExclusions("");
+    Require(Traced(&Unlabeled, "Unlabeled", "") != &Unlabeled);
+    std::puts("call trace exclusions: exact, scoped, aliases and inferred modules checked");
+}
+
+int main(int argc, char** argv) {
+    SetExclusions("");
+#ifdef _WIN32
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     Require(_putenv_s("APS5_TRACE_CALLS", "libTraced,libOther.prx") == 0);
 #else
     Require(setenv("APS5_TRACE_CALLS", "libTraced,libOther.prx", 1) == 0);
@@ -112,9 +171,7 @@ int main(int argc, char** argv) {
         const auto first = Traced(&Integers, "Integers", "libTraced.prx");
         const auto second = Traced(&Blocks, "Blocks", "libOther.prx");
         Require(first(1, 2, 3, 4, 5, 6, 7, 8) == 204 && second(7).words[3] == 10);
-#ifdef _WIN32
-        _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-#else
+#ifndef _WIN32
         std::atomic<bool> locked{false};
         std::thread([&locked] {
             flockfile(stderr);
@@ -140,6 +197,12 @@ int main(int argc, char** argv) {
     std::uint64_t total = 1;
     Require(CopyCallTrace_nid_no_patch(entries, 16) == 0);
     Require(CopyCallCounts_nid_no_patch(counts, 8, &total) == 0 && total == 0);
+    SetExclusions("Integers");
+    const auto excluded = Traced(&Integers, "Integers", "libTraced.prx");
+    Require(excluded == &Integers && excluded(1, 2, 3, 4, 5, 6, 7, 8) == 204);
+    Require(CopyCallTrace_nid_no_patch(entries, 16) == 0);
+    Require(CopyCallCounts_nid_no_patch(counts, 8, &total) == 0 && total == 0);
+    SetExclusions("");
     Require(Traced(&Integers, "Integers", "libUnselected.prx") == &Integers);
     Require(TraceImport_nid_no_patch(nullptr, "Integers", "libTraced.prx") == nullptr);
     Require(CopyCallTrace_nid_no_patch(entries, 16) == 0);
@@ -250,4 +313,5 @@ int main(int argc, char** argv) {
         }
     }
     Require(inferred);
+    ExclusionTests(executable);
 }
