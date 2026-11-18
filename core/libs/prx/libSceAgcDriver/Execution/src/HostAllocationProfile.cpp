@@ -56,8 +56,16 @@ unsigned Capture(std::array<std::uint64_t, Depth>& frames) {
     MEMORY_BASIC_INFORMATION stack{};
     if (VirtualQuery(reinterpret_cast<void*>(context.Rsp), &stack, sizeof(stack)) != sizeof(stack)) return 0;
     if (stack.State != MEM_COMMIT || (stack.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return 0;
-    const auto low = reinterpret_cast<std::uint64_t>(stack.BaseAddress);
-    const auto high = low + stack.RegionSize;
+    auto low = reinterpret_cast<std::uint64_t>(stack.BaseAddress);
+    auto high = low + stack.RegionSize;
+    const auto* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+    const auto stackLow = reinterpret_cast<std::uint64_t>(tib->StackLimit);
+    const auto stackHigh = reinterpret_cast<std::uint64_t>(tib->StackBase);
+    if (stackLow <= context.Rsp && context.Rsp < stackHigh) {
+        low = stackLow;
+        high = stackHigh;
+        state->walkCounts[15].fetch_add(1);
+    }
     unsigned count = 0;
     for (unsigned depth = 0; depth < 32 && context.Rip != 0 && count < frames.size(); ++depth) {
         if (context.Rsp < low || context.Rsp >= high) { state->walkCounts[1].fetch_add(1); break; }
@@ -88,7 +96,22 @@ unsigned Capture(std::array<std::uint64_t, Depth>& frames) {
                 if (address >= reinterpret_cast<std::uint64_t>(tib->StackLimit) && address <= reinterpret_cast<std::uint64_t>(tib->StackBase) - sizeof(value)) state->walkCounts[9].fetch_add(1);
                 return false;
             }
-            std::memcpy(&value, reinterpret_cast<void*>(address), sizeof(value));
+            std::size_t copied = 0;
+            while (copied < sizeof(value)) {
+                MEMORY_BASIC_INFORMATION region{};
+                const auto current = address + copied;
+                constexpr DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+                if (VirtualQuery(reinterpret_cast<void*>(current), &region, sizeof(region)) != sizeof(region) || region.State != MEM_COMMIT || (region.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0 || (region.Protect & readable) == 0) {
+                    state->walkCounts[13].fetch_add(1);
+                    return false;
+                }
+                const auto end = reinterpret_cast<std::uint64_t>(region.BaseAddress) + region.RegionSize;
+                if (end <= current) return false;
+                const auto bytes = std::min<std::size_t>(sizeof(value) - copied, end - current);
+                std::memcpy(reinterpret_cast<std::byte*>(&value) + copied, reinterpret_cast<void*>(current), bytes);
+                copied += bytes;
+                if (copied < sizeof(value)) state->walkCounts[14].fetch_add(1);
+            }
             return true;
         });
         if (step != AgcDriver::DwarfFrames::Step::Stepped) {
