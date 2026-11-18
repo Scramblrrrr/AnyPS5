@@ -39,6 +39,7 @@ struct State {
     std::atomic<std::uint64_t> dropped{0};
     std::array<std::atomic<std::uint64_t>, 16> walkCounts{};
     unsigned sequence = 0;
+    std::uint64_t snapshotInterval = 15000;
     bool (*attach)(mi_profiler_t*) = nullptr;
     bool (*start)(mi_profiler_t*) = nullptr;
     bool (*stop)(mi_profiler_t*) = nullptr;
@@ -190,7 +191,7 @@ std::size_t OnAllocate(mi_profiler_t*, mi_profiler_sample_data_t* data, void*, s
     }
     const auto now = GetTickCount64();
     auto next = state->nextSnapshot.load();
-    if (now >= next && state->nextSnapshot.compare_exchange_strong(next, now + 15000)) state->snapshot(&state->profiler);
+    if (now >= next && state->nextSnapshot.compare_exchange_strong(next, now + state->snapshotInterval)) state->snapshot(&state->profiler);
     return SampleRate;
 }
 
@@ -234,6 +235,12 @@ void Initialize(const char* configured) {
         framesEnd = frames + sections[index].Misc.VirtualSize;
     }
     if (frames == nullptr) throw std::runtime_error("native allocation profiler requires its own DWARF unwind table");
+    if (const auto* configuredInterval = std::getenv("APS5_PROFILE_HOST_ALLOCATION_MS")) {
+        char* end = nullptr;
+        const auto interval = std::strtoull(configuredInterval, &end, 10);
+        if (end == configuredInterval || *end != 0 || interval < 1000 || interval > 60000) throw std::runtime_error("native allocation profile interval must be 1000 to 60000 milliseconds");
+        value->snapshotInterval = interval;
+    }
     value->module = std::make_unique<AgcDriver::DwarfFrames>(base, base + nt->OptionalHeader.SizeOfImage, frames, framesEnd);
     value->output = std::filesystem::path(reinterpret_cast<const char8_t*>(configured)).wstring();
     value->profiler.sample_data_size = 2 * sizeof(void*);
@@ -241,7 +248,7 @@ void Initialize(const char* configured) {
     value->profiler.on_alloc = OnAllocate;
     value->profiler.on_free = OnFree;
     value->profiler.on_snapshot = Snapshot;
-    value->nextSnapshot = GetTickCount64() + 15000;
+    value->nextSnapshot = GetTickCount64() + value->snapshotInterval;
     state = value;
     if (!state->attach(&state->profiler)) throw std::runtime_error("native allocation profiler cannot replace an existing profiler");
     try {
