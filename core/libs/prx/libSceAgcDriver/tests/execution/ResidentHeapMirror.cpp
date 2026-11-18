@@ -29,6 +29,8 @@
 #include <iostream>
 #include <mutex>
 #include <span>
+#include <stdexcept>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -44,6 +46,9 @@ namespace {
 
 using AgcDriver::Graphics::Require;
 using ShaderRecompiler::ShaderStage;
+
+bool continueUploadCheck = false;
+bool uploadCheckFailed = false;
 
 constexpr std::uint32_t Threads = 64;
 constexpr std::uint64_t Block = 65536;
@@ -289,7 +294,13 @@ void ResidentTests(AgcDriver::VulkanDevice& device) {
     const auto settled = AgcDriver::Graphics::MirrorCounters();
     AgcDriver::GuestMemory::MarkWritten(read.Address() + 8, 16);
     Dispatch(device, read, written, output);
-    Require(AgcDriver::Graphics::MirrorCounters().blocksCopied == settled.blocksCopied, "resident heap mirror: a block stamped without a byte change was copied into its mirror again");
+    try {
+        Require(AgcDriver::Graphics::MirrorCounters().blocksCopied == settled.blocksCopied, "resident heap mirror: a block stamped without a byte change was copied into its mirror again");
+    } catch (const std::runtime_error& error) {
+        if (!continueUploadCheck) throw;
+        std::cerr << error.what() << '\n';
+        uploadCheckFailed = true;
+    }
     CheckReads(output, "a stamped block that did not change", true);
     CheckStores(written, "a stamped block that did not change");
 }
@@ -691,8 +702,10 @@ void BudgetEvictionTests(AgcDriver::VulkanDevice& device, bool sparse) {
 
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--continue-upload-check") continueUploadCheck = true;
+        else if (argc != 1) throw std::runtime_error("resident heap mirror: unknown diagnostic argument");
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
 #ifdef _WIN32
@@ -726,6 +739,10 @@ int main() {
         }
         if (sparse) FullDeviceHeapTests(*device);
         if (sparse) FullDeviceHeapPastReserveTests(*device);
+        if (uploadCheckFailed) {
+            std::cerr << "resident heap mirror: all data checks completed; unchanged-byte upload optimization remains failed\n";
+            return 1;
+        }
         std::puts("resident heap mirror tests passed");
         return 0;
     } catch (const std::exception& error) {
