@@ -5985,6 +5985,12 @@ std::shared_ptr<const GuestAllocations::Range> joinedHeapRange(const GuestAlloca
 }
 
 bool GuestBufferMemory::bindSparseMirror(Region& region, const GuestAllocations::Lease& lease) {
+    struct PublishingScope {
+        explicit PublishingScope(std::vector<MirrorPublishEntry>& entries) : previous(publishing) { publishing = &entries; }
+        ~PublishingScope() { publishing = previous; }
+        std::vector<MirrorPublishEntry>* previous;
+    };
+    const PublishingScope publishingScope(mirrorPublishes);
     const auto backedEnd = region.backed.empty() ? region.begin : region.backed.back().second;
     const auto neededEnd = std::min(region.end, std::max(backedEnd, std::max(region.lastView, region.begin) + 4u));
     std::shared_ptr<const GuestAllocations::Range> owner;
