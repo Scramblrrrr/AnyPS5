@@ -5267,7 +5267,7 @@ void hostWriteWatchExclusionTests() {
 
 void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& access) {
     constexpr std::size_t half = 1u << 20u;
-    constexpr std::size_t reserved = 2 * half;
+    constexpr std::size_t reserved = 3 * half;
     constexpr std::size_t page = 65536;
 #ifdef _WIN32
     if (!GuestArena::GuestArenaAvailable_nid_postfix() || !GuestArena::GuestArenaWriteWatched_nid_postfix()) {
@@ -5278,6 +5278,7 @@ void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& ac
     auto* guest = static_cast<std::uint8_t*>(block);
     GuestArena::GuestArenaCommit_nid_postfix(guest, page, PAGE_READWRITE, page);
     GuestArena::GuestArenaCommit_nid_postfix(guest + half, page, PAGE_READWRITE, page);
+    GuestArena::GuestArenaCommit_nid_postfix(guest + 2 * half, page, PAGE_READWRITE, page);
 #else
     if (!GuestWriteWatch::GuestWriteWatchAvailable_nid_postfix()) {
         std::cout << "write watch unavailable: sparse heap mirrors over adjacent ranges not tested\n";
@@ -5286,22 +5287,26 @@ void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& ac
     void* mapping = mmap(nullptr, reserved + page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     Require(mapping != MAP_FAILED, "cannot reserve the sparse heap over adjacent ranges");
     auto* guest = reinterpret_cast<std::uint8_t*>((reinterpret_cast<std::uintptr_t>(mapping) + page - 1) & ~std::uintptr_t{page - 1});
-    Require(mprotect(guest, page, PROT_READ | PROT_WRITE) == 0 && mprotect(guest + half, page, PROT_READ | PROT_WRITE) == 0, "cannot commit the sparse heap pages");
+    Require(mprotect(guest, page, PROT_READ | PROT_WRITE) == 0 && mprotect(guest + half, page, PROT_READ | PROT_WRITE) == 0 && mprotect(guest + 2 * half, page, PROT_READ | PROT_WRITE) == 0, "cannot commit the sparse heap pages");
     GuestWriteWatch::GuestWriteWatchRegister_nid_postfix(guest, reserved);
     void* block = guest;
 #endif
     auto* second = guest + half;
+    auto* third = guest + 2 * half;
     std::memset(guest, 0x5a, page);
     std::memset(second, 0x6b, page);
+    std::memset(third, 0x3c, page);
     const auto base = reinterpret_cast<std::uintptr_t>(block);
     const auto registry = [&](bool add) {
         auto* mutation = GuestAllocations::GuestAllocationsBegin_nid_postfix();
         if (add) {
             GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, guest, half, true, true, true);
             GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, second, half, true, true, true);
+            GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, third, half, true, true, true);
         } else {
             GuestAllocations::GuestAllocationsRemove_nid_postfix(mutation, guest);
             GuestAllocations::GuestAllocationsRemove_nid_postfix(mutation, second);
+            GuestAllocations::GuestAllocationsRemove_nid_postfix(mutation, third);
         }
         GuestAllocations::GuestAllocationsEnd_nid_postfix(mutation);
     };
@@ -5313,15 +5318,18 @@ void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& ac
     };
     sweep();
     registry(true);
-    const auto bind = [&] {
+    const auto bind = [&](std::size_t first = 0) {
+        const auto address = base + first * half;
         GuestBufferMemory memory(context);
-        memory.AddWritable(base, reserved);
+        memory.AddWritable(address, 2 * half);
         memory.Upload(false);
         std::uint32_t adjustment = 0;
-        const auto view = memory.Descriptor(base, reserved, adjustment);
+        const auto view = memory.Descriptor(address, 2 * half, adjustment);
         Require(adjustment == 0, "a sparse heap view over adjacent ranges is adjusted");
         const auto bytes = access.bytes(view.buffer);
-        Require(view.range >= half + page && bytes[view.offset + page - 1] == std::byte{0x5a} && bytes[view.offset + page] == std::byte{} && bytes[view.offset + half] == std::byte{0x6b}, "a sparse heap over adjacent ranges is not bound to its committed extent");
+        const auto firstValue = static_cast<std::byte>(first == 0 ? 0x5a : 0x6b);
+        const auto secondValue = static_cast<std::byte>(first == 0 ? 0x6b : 0x3c);
+        Require(view.range >= half + page && bytes[view.offset + page - 1] == firstValue && bytes[view.offset + page] == std::byte{} && bytes[view.offset + half] == secondValue, "a sparse heap over adjacent ranges is not bound to its committed extent");
         bytes[view.offset + half + 8] = std::byte{0x77};
         memory.WriteBack();
         return view;
@@ -5332,8 +5340,11 @@ void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& ac
     Require(made.sparseBinds == before.sparseBinds + 1 && made.heapMirrors == before.heapMirrors + 1, "a sparse heap whose committed span crosses an adjacent range was not mirrored");
     Require(second[8] == 0x77, "a store to the adjacent range of a mirrored sparse heap was not written back");
     second[8] = 0x6b;
+    const auto overlapping = bind(1);
+    Require(overlapping.buffer == first.buffer && overlapping.offset == first.offset + half && MirrorCounters().heapMirrors == made.heapMirrors && MirrorCounters().rebuilds == made.rebuilds, "overlapping sparse heap views created different joined mirrors");
+    Require(third[8] == 0x77, "a store through the overlapping joined mirror did not reach its range");
     const auto again = bind();
-    Require(again.buffer == first.buffer && MirrorCounters().rebuilds == made.rebuilds && MirrorCounters().sparseBinds == made.sparseBinds + 1, "a sparse heap over unchanged adjacent ranges did not reuse its mirror");
+    Require(again.buffer == first.buffer && MirrorCounters().rebuilds == made.rebuilds && MirrorCounters().sparseBinds == made.sparseBinds + 2, "a sparse heap over unchanged adjacent ranges did not reuse its mirror");
     registry(false);
     sweep();
     Require(MirrorCounters().heapMirrors == before.heapMirrors && MirrorCounters().heapBytes == before.heapBytes, "the sparse heap mirror over adjacent ranges outlived its ranges");
@@ -5344,6 +5355,7 @@ void sparseJoinedHeapMirrorTests(const Context& context, const BdaTestAccess& ac
     GuestWriteWatch::GuestWriteWatchUnregister_nid_postfix(guest, reserved);
     munmap(mapping, reserved + page);
 #endif
+    std::cout << "overlapping sparse heap views share one joined mirror and release it\n";
 }
 
 void joinedHeapMirrorPartialImportTests(const Context& context, const BdaTestAccess& access) {
